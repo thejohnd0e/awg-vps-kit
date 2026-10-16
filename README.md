@@ -29,7 +29,22 @@ cd awg-vps-kit
 ./install.sh --subnet 10.79.0 --first-client user_01
 ```
 
-Options (all optional):
+**Update** (later, from the same folder; details in "Updating"):
+
+```bash
+cd ~/awg-vps-kit    # the folder you cloned into
+./update.sh --check # only report
+./update.sh         # apply: git pull, rebuild binaries if upstream has news, restart
+```
+
+**Uninstall** (details in "Uninstall"):
+
+```bash
+cd ~/awg-vps-kit
+./uninstall.sh      # asks for confirmation; add --keep-config to keep keys and clients
+```
+
+`install.sh` options (all optional):
 
 | Option | Default | Meaning |
 |---|---|---|
