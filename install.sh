@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
     --first-client) FIRST=$2; shift 2 ;;
     --no-service) NO_SERVICE=1; shift ;;
     --allow-outdated) ALLOW_OUTDATED=1; shift ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
