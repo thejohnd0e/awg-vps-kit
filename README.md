@@ -15,9 +15,25 @@ Files in this directory:
 | `uninstall.sh` | removes everything `install.sh` created |
 | `README.md` | this file, also copied to `/etc/amnezia/amneziawg/README.md` on the server |
 
+## Requirements
+
+Minimum VPS instance:
+
+| | Minimum | Notes |
+|---|---|---|
+| OS | **Debian 12 or 13 (recommended)**, Ubuntu 22.04+ | CI tests Debian 12 and Ubuntu 24.04; other distros are not supported (`apt` is required) |
+| CPU | 1 vCPU | userspace `amneziawg-go` tops out around 200 Mbit/s on 1 vCPU |
+| RAM | 1 GB | enough for the build (low-memory settings); RAM use of the running service: not measured |
+| Network | public IPv4, UDP port open | default UDP 443; open it in the provider's firewall too |
+| Access | root | |
+| Virtualization | KVM/Xen/VMware with `/dev/net/tun` | OpenVZ/LXC containers often lack the TUN device and will not work unless the provider enables it |
+| CPU architecture | x86_64 or aarch64 | other architectures: TBD |
+
+Disk space and traffic needs are not measured: TBD.
+
 ## Install on a new server
 
-Debian 12/13 or Ubuntu 22.04+, root, a public IPv4 address. The binaries are built
+See "Requirements" above. The binaries are built
 from the official sources (`amnezia-vpn/amneziawg-go`, `amnezia-vpn/amneziawg-tools`),
 which takes a few minutes and works on 1 GB of RAM. Run the commands below on the server itself.
 
