@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Syntax check
+        run: bash -n install.sh update.sh uninstall.sh awg-client tests/test-install.sh
+      - name: ShellCheck
+        run: shellcheck install.sh update.sh uninstall.sh awg-client tests/test-install.sh
+
+  install-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:12", "ubuntu:24.04"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build binaries (tests the build path)
+        run: bash install.sh --build-only /opt/awg-bin
+      - name: Install and client management
+        run: bash tests/test-install.sh /opt/awg-bin

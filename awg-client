@@ -1,0 +1,127 @@
+#!/bin/bash
+# awg-client: manage AmneziaWG clients on this server.
+set -euo pipefail
+DIR=/etc/amnezia/amneziawg
+IF=awg0
+CONF=$DIR/$IF.conf
+CL=$DIR/clients
+
+usage() {
+cat <<'EOF'
+awg-client - manage AmneziaWG clients on this server (run as root)
+
+Usage:
+  awg-client add <name>      create a client, print its config and QR code
+  awg-client show <name>     print an existing client's config and QR code again
+  awg-client list            list all clients with their tunnel addresses
+  awg-client remove <name>   remove a client (takes effect immediately)
+  awg-client help            this help
+
+Notes:
+  - Name: letters, digits, _ and - only (max 32 characters).
+  - The next free tunnel address is picked automatically.
+  - Clients are added to the running tunnel without a restart and are
+    also written to /etc/amnezia/amneziawg/awg0.conf (survives reboot).
+  - Client files: /etc/amnezia/amneziawg/clients/<name>.{conf,key,pub,psk}
+  - One config per device: two devices on the same config kick each other off.
+  - Removing a client disconnects that device immediately.
+  - Details: /etc/amnezia/amneziawg/README.md
+EOF
+}
+
+cmd=${1:-help}
+name=${2:-}
+
+case "$cmd" in help|-h|--help) usage; exit 0 ;; esac
+
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+[ -f "$CONF" ] || { echo "no $CONF" >&2; exit 1; }
+umask 077
+mkdir -p "$CL"
+
+valid() { [[ "$1" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "name: letters, digits, _ and - only (max 32); see: awg-client help" >&2; exit 1; }; }
+iface_val() { awk -v k="$1" '/^\[Peer\]/{exit} $1==k && $2=="="{print $3; exit}' "$CONF"; }
+qr() { if command -v qrencode >/dev/null; then echo; qrencode -t ansiutf8 < "$1"; fi; }
+gen_conf() {  # name ip key psk
+  local ip=$2 key=$3 psk=$4
+  cat <<EOF
+[Interface]
+PrivateKey = $key
+Address = $ip/32
+DNS = 1.1.1.1
+MTU = $(iface_val MTU)
+Jc = $(iface_val Jc)
+Jmin = $(iface_val Jmin)
+Jmax = $(iface_val Jmax)
+S1 = $(iface_val S1)
+S2 = $(iface_val S2)
+H1 = $(iface_val H1)
+H2 = $(iface_val H2)
+H3 = $(iface_val H3)
+H4 = $(iface_val H4)
+
+[Peer]
+PublicKey = $(cat "$DIR/srv.pub")
+PresharedKey = $psk
+Endpoint = $(cat "$DIR/endpoint"):$(iface_val ListenPort)
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+EOF
+}
+peer_ip() {  # tunnel address of the peer commented "# <name>"
+  awk -v n="# $1" '/^\[Peer\]/{p=1;m=0;next} p&&$0==n{m=1} p&&m&&/^AllowedIPs/{sub(/\/32.*/,"",$3);print $3;exit}' "$CONF"
+}
+
+case "$cmd" in
+  list)
+    awk '/^\[Peer\]/{p=1;n="";next} p&&/^# /{n=substr($0,3)} p&&/^AllowedIPs/{print $3"\t"n; p=0}' "$CONF" | sort -V
+    exit 0 ;;
+  show)
+    valid "$name"
+    ip=$(peer_ip "$name")
+    if [ -z "$ip" ] || [ ! -f "$CL/$name.key" ]; then echo "no such client: $name (see: awg-client list)" >&2; exit 1; fi
+    gen_conf "$name" "$ip" "$(cat "$CL/$name.key")" "$(cat "$CL/$name.psk")" > "$CL/$name.conf"
+    cat "$CL/$name.conf"; qr "$CL/$name.conf"
+    exit 0 ;;
+  remove)
+    valid "$name"
+    pub=$(cat "$CL/$name.pub" 2>/dev/null || cat "$DIR/$name.pub" 2>/dev/null || true)
+    [ -n "$pub" ] || { echo "no such client: $name (see: awg-client list)" >&2; exit 1; }
+    cp "$CONF" "$CONF.bak-awg-client"
+    awg set $IF peer "$pub" remove || true
+    awk -v n="# $name" 'BEGIN{RS="";ORS="\n\n"} !($0 ~ /^\[Peer\]/ && index($0, "\n" n "\n"))' "$CONF" > "$CONF.tmp"
+    mv "$CONF.tmp" "$CONF"
+    rm -f "$CL/$name".* "$DIR/$name".{key,pub,psk,conf}
+    echo "removed $name"
+    exit 0 ;;
+  add) ;;
+  *) echo "unknown command: $cmd" >&2; echo >&2; usage >&2; exit 1 ;;
+esac
+
+valid "$name"
+[ ! -e "$CL/$name.conf" ] || { echo "client $name already exists (use: awg-client show $name)" >&2; exit 1; }
+awk -v n="# $name" '$0==n{f=1} END{exit !f}' "$CONF" && { echo "name $name already used in $CONF" >&2; exit 1; }
+
+addr=$(iface_val Address)            # e.g. 10.77.0.1/24
+base=${addr%.*}.                     # 10.77.0.
+
+used=$(grep -E '^AllowedIPs' "$CONF" | grep -o "${base//./\.}[0-9]*" | sed "s/^${base//./\.}//" | sort -n || true)
+n=2
+while [ $n -le 254 ]; do
+  echo "$used" | grep -qx "$n" || break
+  n=$((n+1))
+done
+[ $n -le 254 ] || { echo "no free addresses" >&2; exit 1; }
+ip=$base$n
+
+key=$(awg genkey); pub=$(printf %s "$key" | awg pubkey); psk=$(awg genpsk)
+printf %s "$key" > "$CL/$name.key"; printf %s "$pub" > "$CL/$name.pub"; printf %s "$psk" > "$CL/$name.psk"
+
+cp "$CONF" "$CONF.bak-awg-client"
+printf '\n[Peer]\n# %s\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s/32\n' "$name" "$pub" "$psk" "$ip" >> "$CONF"
+awg set $IF peer "$pub" preshared-key "$CL/$name.psk" allowed-ips "$ip/32"
+
+gen_conf "$name" "$ip" "$key" "$psk" > "$CL/$name.conf"
+
+echo "# client $name -> $ip (saved: $CL/$name.conf)"
+cat "$CL/$name.conf"; qr "$CL/$name.conf"

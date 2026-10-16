@@ -1,0 +1,26 @@
+# Secrets / generated client material
+*.key
+*.psk
+*.pub
+clients/
+*.bak-awg-client
+
+# Build output
+bin/
+*.tmp
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local agent settings
+.claude/settings.local.json
+
+# Local agent/project notes (kept on disk, not published)
+AGENTS.md
+CLAUDE.md
+STATUS.md
+DECISIONS.md
+TODO.md
