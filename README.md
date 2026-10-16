@@ -29,6 +29,8 @@ Minimum VPS instance:
 | Virtualization | KVM/Xen/VMware with `/dev/net/tun` | OpenVZ/LXC containers often lack the TUN device and will not work unless the provider enables it |
 | CPU architecture | x86_64 or aarch64 | other architectures: TBD |
 
+**Why Debian:** a lean default install (few preinstalled services, which leaves more of 1 GB RAM for the build), a stable release with long security support, and it is the primary target of `install.sh` (listed first and tested in CI). Ubuntu works equally well as far as the CI test shows; there is no benchmark comparing them.
+
 Disk space and traffic needs are not measured: TBD.
 
 ## Install on a new server
