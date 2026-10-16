@@ -11,9 +11,10 @@
 #     --build-only DIR      only build the three binaries into DIR and exit
 #     --first-client NAME   create a client right after install       default: none
 #     --no-service          write files only: no systemd, sysctl, firewall (for testing)
+#     --allow-outdated      do not stop if this git checkout is behind upstream
 set -euo pipefail
 
-SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; NO_SERVICE=0
+SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; NO_SERVICE=0; ALLOW_OUTDATED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --subnet) SUBNET=$2; shift 2 ;;
@@ -24,7 +25,8 @@ while [ $# -gt 0 ]; do
     --build-only) BUILD_ONLY=$2; shift 2 ;;
     --first-client) FIRST=$2; shift 2 ;;
     --no-service) NO_SERVICE=1; shift ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --allow-outdated) ALLOW_OUTDATED=1; shift ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -40,6 +42,14 @@ die() { echo "error: $*" >&2; exit 1; }
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "--port must be a number"
 command -v apt-get >/dev/null || die "only Debian/Ubuntu (apt) is supported"
 export DEBIAN_FRONTEND=noninteractive
+
+# Warn if this checkout is behind its upstream: the installer installs what is here.
+if [ -z "$BUILD_ONLY" ] && [ "$ALLOW_OUTDATED" = 0 ] && command -v git >/dev/null && [ -d "$HERE/.git" ] \
+   && git -C "$HERE" rev-parse -q --verify '@{u}' >/dev/null 2>&1 \
+   && timeout 15 git -C "$HERE" fetch -q 2>/dev/null; then
+  behind=$(git -C "$HERE" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+  [ "$behind" = 0 ] || die "this checkout is $behind commit(s) behind upstream; run: git -C $HERE pull   (or pass --allow-outdated)"
+fi
 
 # ---------------------------------------------------------------- build
 build_binaries() {  # build_binaries <outdir>

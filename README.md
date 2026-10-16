@@ -56,6 +56,7 @@ cd ~/awg-vps-kit
 | `--build-only DIR` | | only build the binaries into `DIR` and exit |
 | `--first-client NAME` | none | create a client at the end and print its config |
 | `--no-service` | | write files only (no systemd, sysctl, firewall), for testing |
+| `--allow-outdated` | | install even if this git checkout is behind upstream (by default it stops and asks for `git pull`) |
 
 What the installer does:
 
