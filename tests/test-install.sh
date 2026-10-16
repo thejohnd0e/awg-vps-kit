@@ -18,6 +18,10 @@ has "$DIR/awg0.conf" 'ListenPort = 443'
 has "$DIR/nat-up.nft" 'ip saddr 10.79.0.0/24 oifname "eth0" masquerade'
 [ "$(grep -E '^H[1-4] =' "$DIR/awg0.conf" | awk '{print $3}' | sort -u | wc -l)" = 4 ] || fail "H1-H4 not distinct"
 ok "install.sh wrote server files"
+kit_version=$(tr -d '\r\n ' < VERSION)
+awg-client version | grep -q "^awg-vps-kit: $kit_version " || fail "awg-client version: wrong kit version"
+awg-client version | grep -Eq '^amneziawg-go: [0-9a-f]{7}$' || fail "awg-client version: no amneziawg-go commit"
+ok "awg-client version"
 
 if ./install.sh --no-service --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null 2>&1; then
   fail "second install.sh run must refuse to overwrite"
@@ -56,7 +60,7 @@ awg-client add carol >/dev/null
 awg-client list | grep -q "^10.79.0.2.*carol" || fail "carol should reuse 10.79.0.2"
 ok "remove frees the address and keeps other clients"
 
-check=$(./update.sh --check)
+check=$(./update.sh --check) || [ $? = 10 ]   # 0 = latest installed, 10 = update available
 echo "$check" | grep -q "^amneziawg-go: " || fail "update --check printed no status"
 ./update.sh --force --bin-dir "$BIN" --no-restart >/dev/null
 awg-client list | grep -q carol || fail "clients lost after update"

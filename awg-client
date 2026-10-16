@@ -15,6 +15,7 @@ Usage:
   awg-client show <name>     print an existing client's config and QR code again
   awg-client list            list all clients with their tunnel addresses
   awg-client remove <name>   remove a client (takes effect immediately)
+  awg-client version         show installed kit and amneziawg versions
   awg-client help            this help
 
 Notes:
@@ -29,10 +30,24 @@ Notes:
 EOF
 }
 
+kv() {  # kv <file> <key>: value from a key=value file, empty if missing
+  awk -F= -v k="$2" '$1==k{print $2; exit}' "$1" 2>/dev/null || true
+}
+show_version() {
+  local v c go tools
+  v=$(kv "$DIR/kit-version" version); c=$(kv "$DIR/kit-version" commit)
+  go=$(kv "$DIR/versions" amneziawg-go); tools=$(kv "$DIR/versions" amneziawg-tools)
+  echo "awg-vps-kit: ${v:-unknown} (${c:-unknown})"
+  go=${go:-unknown}; tools=${tools:-unknown}
+  echo "amneziawg-go: ${go:0:7}"
+  echo "amneziawg-tools: ${tools:0:7}"
+}
+
 cmd=${1:-help}
 name=${2:-}
 
 case "$cmd" in help|-h|--help) usage; exit 0 ;; esac
+case "$cmd" in version|-v|--version) show_version; exit 0 ;; esac
 
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 [ -f "$CONF" ] || { echo "no $CONF" >&2; exit 1; }

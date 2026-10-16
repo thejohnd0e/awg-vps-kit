@@ -130,6 +130,10 @@ while [ $((S1 + 56)) -eq "$S2" ]; do S2=$(shuf -i 15-150 -n 1); done
 mkdir -p "$DIR/clients"; chmod 700 "$DIR"; umask 077
 awg genkey | tee "$DIR/srv.key" | awg pubkey > "$DIR/srv.pub"
 [ ! -f "$BIN_DIR/versions" ] || install -m 644 "$BIN_DIR/versions" "$DIR/versions"
+{
+  echo "version=$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)"
+  echo "commit=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+} > "$DIR/kit-version"
 echo "$ENDPOINT" > "$DIR/endpoint"
 
 # -------------------------------------------------------------- firewall

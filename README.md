@@ -91,6 +91,7 @@ awg-client add <name>      # create a client, print config + QR code
 awg-client show <name>     # print config + QR code again
 awg-client list            # clients and their tunnel addresses
 awg-client remove <name>   # remove a client
+awg-client version          # installed kit and amneziawg versions
 ```
 
 - Name: letters, digits, `_`, `-`, up to 32 characters.
@@ -135,10 +136,13 @@ Run from the cloned repo on the server (keep the clone, e.g. `/root/awg-vps-kit`
 
 ```bash
 cd /root/awg-vps-kit
-./update.sh --check    # what is outdated: the kit itself, amneziawg-go, amneziawg-tools
-./update.sh            # git pull, rebuild binaries if upstream has new commits, restart
+./update.sh --check    # report only; exit code 0 = latest installed, 10 = update available
+./update.sh            # updates only if something is newer, otherwise says so
 ```
 
+It compares the installed versions (kit `VERSION`, `amneziawg-go` and `amneziawg-tools`
+commits; see `awg-client version`) with the latest ones and prints either
+`Update available: ... ; updating.` or `Latest version is installed (...)`.
 The server config, keys and clients are not touched. A binary update restarts the
 service (clients reconnect in a few seconds); the previous binaries are kept in
 `/opt/amneziawg/prev`. Servers installed before `update.sh` existed have no recorded
