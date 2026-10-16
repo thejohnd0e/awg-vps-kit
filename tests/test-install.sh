@@ -47,6 +47,8 @@ echo "$out" | grep -q 'Address = 10.79.0.2/32' || fail "show: wrong address"
 echo "$out" | grep -q 'Endpoint = 203.0.113.10:443' || fail "show: wrong endpoint"
 h1=$(awk '$1=="H1"{print $3; exit}' "$DIR/awg0.conf")
 echo "$out" | grep -q "^H1 = $h1\$" || fail "show: H1 differs from server"
+[ "$(echo "$out" | head -1)" = "$(printf "%60s" "" | tr " " "#")" ] || fail "show: config is not framed by separator lines"
+[ "$(grep -c "^####" "$DIR/clients/alice.conf")" = 0 ] || fail "separator leaked into the client file"
 ok "show prints a matching client config"
 
 if awg-client add alice >/dev/null 2>&1; then fail "duplicate add must fail"; fi

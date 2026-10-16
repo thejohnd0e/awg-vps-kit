@@ -57,6 +57,9 @@ mkdir -p "$CL"
 valid() { [[ "$1" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "name: letters, digits, _ and - only (max 32); see: awg-client help" >&2; exit 1; }; }
 iface_val() { awk -v k="$1" '/^\[Peer\]/{exit} $1==k && $2=="="{print $3; exit}' "$CONF"; }
 qr() { if command -v qrencode >/dev/null; then echo; qrencode -t ansiutf8 < "$1"; fi; }
+# config between separator lines (only on screen, not in the file), then the QR code
+SEP=############################################################
+print_conf() { echo "$SEP"; cat "$CL/$1.conf"; echo "$SEP"; qr "$CL/$1.conf"; }
 gen_conf() {  # name ip key psk
   local ip=$2 key=$3 psk=$4
   cat <<EOF
@@ -96,7 +99,7 @@ case "$cmd" in
     ip=$(peer_ip "$name")
     if [ -z "$ip" ] || [ ! -f "$CL/$name.key" ]; then echo "no such client: $name (see: awg-client list)" >&2; exit 1; fi
     gen_conf "$name" "$ip" "$(cat "$CL/$name.key")" "$(cat "$CL/$name.psk")" > "$CL/$name.conf"
-    cat "$CL/$name.conf"; qr "$CL/$name.conf"
+    print_conf "$name"
     exit 0 ;;
   remove)
     valid "$name"
@@ -139,4 +142,4 @@ awg set $IF peer "$pub" preshared-key "$CL/$name.psk" allowed-ips "$ip/32"
 gen_conf "$name" "$ip" "$key" "$psk" > "$CL/$name.conf"
 
 echo "# client $name -> $ip (saved: $CL/$name.conf)"
-cat "$CL/$name.conf"; qr "$CL/$name.conf"
+print_conf "$name"
