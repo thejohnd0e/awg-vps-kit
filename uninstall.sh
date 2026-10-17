@@ -28,7 +28,8 @@ echo "  - /usr/local/bin/{amneziawg-go,awg,awg-quick,awg-client}, /opt/amneziawg
 if [ "$KEEP" = 1 ]; then echo "  (keeping /etc/amnezia: keys and clients)"; else echo "  - /etc/amnezia (server keys and ALL client configs)"; fi
 if [ "$YES" = 0 ]; then
   # stdin may be the script itself (curl | bash): ask on the terminal
-  read -r -p "Type 'yes' to continue: " ans </dev/tty 2>/dev/null || die "no terminal to ask on: pass --yes"
+  { true </dev/tty; } 2>/dev/null || die "no terminal to ask on: pass --yes"
+  read -r -p "Type 'yes' to continue: " ans </dev/tty
   [ "$ans" = yes ] || die "aborted"
 fi
 
