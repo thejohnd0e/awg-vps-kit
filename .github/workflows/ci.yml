@@ -14,9 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Syntax check
-        run: bash -n bootstrap.sh install.sh update.sh uninstall.sh awg-client tests/test-install.sh
+        run: bash -n install.sh update.sh uninstall.sh awg-client tests/test-install.sh
       - name: ShellCheck
-        run: shellcheck bootstrap.sh install.sh update.sh uninstall.sh awg-client tests/test-install.sh
+        run: shellcheck install.sh update.sh uninstall.sh awg-client tests/test-install.sh
 
   install-test:
     runs-on: ubuntu-24.04

@@ -13,8 +13,7 @@ Files in this directory:
 
 | File | Purpose |
 |---|---|
-| `bootstrap.sh` | one-line entry point: clones the kit to `/opt/awg-vps-kit` and runs `install.sh` |
-| `install.sh` | one-shot installer for a fresh Debian/Ubuntu server |
+| `install.sh` | one-shot installer for a fresh Debian/Ubuntu server; started via `curl \| bash` it first clones the kit to `/opt/awg-vps-kit` |
 | `awg-client` | client manager, installed to `/usr/local/bin` |
 | `update.sh` | checks and applies updates (kit + amneziawg binaries) |
 | `uninstall.sh` | removes everything `install.sh` created |
@@ -46,11 +45,11 @@ which takes a few minutes and works on 1 GB of RAM. Run the commands below on th
 
 ```bash
 # on the server, as root (the kit goes to /opt/awg-vps-kit; run this from any folder):
-curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/bootstrap.sh | bash -s -- --subnet 10.79.0 --first-client user_01
+curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/install.sh | bash -s -- --subnet 10.79.0 --first-client user_01
 ```
 
-The script installs `git` if needed, clones the kit into `/opt/awg-vps-kit` (or fast-forwards
-an existing clone there) and runs `install.sh` with the options you passed. If `curl` is
+Started this way, `install.sh` installs `git` if needed, clones the kit into `/opt/awg-vps-kit`
+(or fast-forwards an existing clone there) and continues from that copy with the options you passed. If `curl` is
 missing, run `apt-get update && apt-get install -y curl` first.
 
 **Update** (later; details in "Updating"):

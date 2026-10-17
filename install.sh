@@ -14,6 +14,23 @@
 #     --allow-outdated      do not stop if this git checkout is behind upstream
 set -euo pipefail
 
+# Started through `curl ... | bash` (no kit checkout next to this script): fetch the kit into
+# /opt/awg-vps-kit (or fast-forward the clone there) and continue from it, so the result does
+# not depend on the current folder.
+if [ ! -f "$(dirname "$0")/awg-client" ]; then
+  KIT=/opt/awg-vps-kit
+  [ "$(id -u)" = 0 ] || { echo "error: run as root" >&2; exit 1; }
+  command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null; }
+  if [ -d "$KIT/.git" ]; then
+    git -C "$KIT" pull --ff-only -q || { echo "error: cannot fast-forward $KIT (local changes?)" >&2; exit 1; }
+  elif [ -e "$KIT" ]; then
+    echo "error: $KIT exists but is not a clone of the kit; move it away and run this again" >&2; exit 1
+  else
+    git clone -q https://github.com/thejohnd0e/awg-vps-kit.git "$KIT"
+  fi
+  exec "$KIT/install.sh" "$@"
+fi
+
 SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; NO_SERVICE=0; ALLOW_OUTDATED=0
 while [ $# -gt 0 ]; do
   case "$1" in
