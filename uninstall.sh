@@ -2,8 +2,8 @@
 # AWG VPS Kit uninstaller: stops the service and removes everything install.sh created.
 # Installed apt packages (nftables, qrencode, ...) are left alone. Run as root.
 #
-#   ./uninstall.sh            ask for confirmation, then remove everything
-#   -y, --yes                 do not ask
+#   curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/uninstall.sh | bash -s -- [options]
+#   -y, --yes                 do not ask for confirmation
 #   --keep-config             keep /etc/amnezia (server keys, clients) for a later reinstall
 set -euo pipefail
 
@@ -24,10 +24,11 @@ die() { echo "error: $*" >&2; exit 1; }
 
 echo "This will stop awg-quick@$IF and remove:"
 echo "  - systemd unit, /etc/sysctl.d/99-awg.conf, nftables table awg_nat, ufw rules (if any)"
-echo "  - /usr/local/bin/{amneziawg-go,awg,awg-quick,awg-client} and /opt/amneziawg"
+echo "  - /usr/local/bin/{amneziawg-go,awg,awg-quick,awg-client}, /opt/amneziawg and /opt/awg-vps-kit"
 if [ "$KEEP" = 1 ]; then echo "  (keeping /etc/amnezia: keys and clients)"; else echo "  - /etc/amnezia (server keys and ALL client configs)"; fi
 if [ "$YES" = 0 ]; then
-  read -r -p "Type 'yes' to continue: " ans
+  # stdin may be the script itself (curl | bash): ask on the terminal
+  read -r -p "Type 'yes' to continue: " ans </dev/tty 2>/dev/null || die "no terminal to ask on: pass --yes"
   [ "$ans" = yes ] || die "aborted"
 fi
 
@@ -55,7 +56,7 @@ fi
 rm -f /etc/systemd/system/awg-quick@.service /etc/sysctl.d/99-awg.conf
 if command -v systemctl >/dev/null; then systemctl daemon-reload || true; fi
 rm -f /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg.real /usr/local/bin/awg-quick /usr/local/bin/awg-client
-rm -rf /opt/amneziawg
+rm -rf /opt/amneziawg /opt/awg-vps-kit
 if [ "$KEEP" = 0 ]; then rm -rf /etc/amnezia; fi
 
 if [ -n "$port" ] && command -v ss >/dev/null; then
@@ -64,4 +65,4 @@ if [ -n "$port" ] && command -v ss >/dev/null; then
   [ -z "$busy" ] || printf 'warning: UDP port %s is still in use by another process:\n%s\n' "$port" "$busy"
 fi
 
-echo "Removed. Note: net.ipv4.ip_forward stays enabled until reboot; the cloned repo was not deleted."
+echo "Removed. Note: net.ipv4.ip_forward stays enabled until reboot."

@@ -2,14 +2,30 @@
 # AWG VPS Kit updater: compares the installed versions with the latest ones and
 # updates only when something is newer: the kit itself (git pull) and the
 # amneziawg binaries (rebuilt from upstream), then restarts the service.
-# Server config and clients are not touched. Run as root from the cloned repo.
+# Server config and clients are not touched. Run as root.
 #
-#   ./update.sh --check       only report (exit 0: latest installed, 10: update available)
-#   ./update.sh               update what is outdated
+#   curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash -s -- --check   only report (exit 0: latest, 10: update available)
+#   curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash                 update what is outdated
 #   --force                   rebuild binaries even if up to date
 #   --bin-dir DIR             use prebuilt amneziawg-go, awg, awg-quick from DIR (skip build)
 #   --no-restart              do not restart awg-quick@awg0 (new binaries apply after restart)
 set -euo pipefail
+
+# Started through `curl ... | bash` (no kit checkout next to this script): make sure the kit is in
+# /opt/awg-vps-kit (clone or fast-forward) and continue from it, whatever the current folder is.
+if [ ! -f "$(dirname "$0")/awg-client" ]; then
+  KIT=/opt/awg-vps-kit
+  [ "$(id -u)" = 0 ] || { echo "error: run as root" >&2; exit 1; }
+  command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null; }
+  if [ -d "$KIT/.git" ]; then
+    git -C "$KIT" pull --ff-only -q || { echo "error: cannot fast-forward $KIT (local changes?)" >&2; exit 1; }
+  elif [ -e "$KIT" ]; then
+    echo "error: $KIT exists but is not a clone of the kit; move it away and run this again" >&2; exit 1
+  else
+    git clone -q https://github.com/thejohnd0e/awg-vps-kit.git "$KIT"
+  fi
+  exec "$KIT/update.sh" "$@"
+fi
 
 CHECK=0; FORCE=0; BIN_DIR=; NO_RESTART=0; SKIP_KIT=0
 while [ $# -gt 0 ]; do
@@ -97,7 +113,7 @@ fi
 summary=
 for c in "${changes[@]}"; do summary+="${summary:+, }$c"; done
 if [ "$CHECK" = 1 ]; then
-  echo "Update available: $summary; run ./update.sh"
+  echo "Update available: $summary; run: curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash"
   exit 10
 fi
 if [ "$SKIP_KIT" = 0 ]; then
