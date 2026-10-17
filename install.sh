@@ -43,6 +43,17 @@ die() { echo "error: $*" >&2; exit 1; }
 command -v apt-get >/dev/null || die "only Debian/Ubuntu (apt) is supported"
 export DEBIAN_FRONTEND=noninteractive
 
+# Fail early, before the (slow) build: an existing install and a busy UDP port.
+if [ -z "$BUILD_ONLY" ]; then
+  if [ -f "$DIR/$IF.conf" ]; then die "$DIR/$IF.conf already exists, refusing to overwrite (remove it first if this is intended)"; fi
+  if [ "$NO_SERVICE" = 0 ] && command -v ss >/dev/null; then
+    busy=$(ss -H -ulnp "sport = :$PORT" 2>/dev/null || true)
+    [ -z "$busy" ] || die "UDP port $PORT is already in use:
+$busy
+stop that service or pick another port with --port"
+  fi
+fi
+
 # Warn if this checkout is behind its upstream: the installer installs what is here.
 if [ -z "$BUILD_ONLY" ] && [ "$ALLOW_OUTDATED" = 0 ] && command -v git >/dev/null && [ -d "$HERE/.git" ] \
    && git -C "$HERE" rev-parse -q --verify '@{u}' >/dev/null 2>&1 \
@@ -127,13 +138,6 @@ install -m 755 "$HERE/awg-client" /usr/local/bin/awg-client
 if [ -z "$ENDPOINT" ]; then
   ENDPOINT=$(curl -4 -fsS --max-time 10 https://api.ipify.org || true)
   [ -n "$ENDPOINT" ] || die "cannot detect the public IP, pass --endpoint"
-fi
-if [ -f "$DIR/$IF.conf" ]; then die "$DIR/$IF.conf already exists, refusing to overwrite (remove it first if this is intended)"; fi
-if [ "$NO_SERVICE" = 0 ]; then
-  busy=$(ss -H -ulnp "sport = :$PORT" 2>/dev/null || true)
-  [ -z "$busy" ] || die "UDP port $PORT is already in use:
-$busy
-stop that service or pick another port with --port"
 fi
 
 # ----------------------------------------------------------- parameters
