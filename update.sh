@@ -15,6 +15,7 @@ set -euo pipefail
 # /opt/awg-vps-kit (clone or fast-forward) and continue from it, whatever the current folder is.
 if [ ! -f "$(dirname "$0")/awg-client" ]; then
   KIT=/opt/awg-vps-kit
+  cd /   # the current folder does not matter (it may even have been deleted)
   [ "$(id -u)" = 0 ] || { echo "error: run as root" >&2; exit 1; }
   command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null; }
   if [ -d "$KIT/.git" ]; then
