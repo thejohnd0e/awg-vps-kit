@@ -13,6 +13,7 @@ Files in this directory:
 
 | File | Purpose |
 |---|---|
+| `bootstrap.sh` | one-line entry point: clones the kit to `/opt/awg-vps-kit` and runs `install.sh` |
 | `install.sh` | one-shot installer for a fresh Debian/Ubuntu server |
 | `awg-client` | client manager, installed to `/usr/local/bin` |
 | `update.sh` | checks and applies updates (kit + amneziawg binaries) |
@@ -44,26 +45,25 @@ from the official sources (`amnezia-vpn/amneziawg-go`, `amnezia-vpn/amneziawg-to
 which takes a few minutes and works on 1 GB of RAM. Run the commands below on the server itself.
 
 ```bash
-# on the server, as root:
-apt-get update && apt-get install -y git
-git clone https://github.com/thejohnd0e/awg-vps-kit.git
-cd awg-vps-kit
-./install.sh --subnet 10.79.0 --first-client user_01
+# on the server, as root (the kit goes to /opt/awg-vps-kit; run this from any folder):
+curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/bootstrap.sh | bash -s -- --subnet 10.79.0 --first-client user_01
 ```
 
-**Update** (later, from the same folder; details in "Updating"):
+The script installs `git` if needed, clones the kit into `/opt/awg-vps-kit` (or fast-forwards
+an existing clone there) and runs `install.sh` with the options you passed. If `curl` is
+missing, run `apt-get update && apt-get install -y curl` first.
+
+**Update** (later; details in "Updating"):
 
 ```bash
-cd ~/awg-vps-kit    # the folder you cloned into
-./update.sh --check # only report
-./update.sh         # apply: git pull, rebuild binaries if upstream has news, restart
+/opt/awg-vps-kit/update.sh --check # only report
+/opt/awg-vps-kit/update.sh         # apply: git pull, rebuild binaries if upstream has news, restart
 ```
 
 **Uninstall** (details in "Uninstall"):
 
 ```bash
-cd ~/awg-vps-kit
-./uninstall.sh      # asks for confirmation; add --keep-config to keep keys and clients
+/opt/awg-vps-kit/uninstall.sh      # asks for confirmation; add --keep-config to keep keys and clients
 ```
 
 `install.sh` options (all optional):
@@ -155,12 +155,11 @@ mismatched parameters.
 
 ## Updating
 
-Run from the cloned repo on the server (keep the clone, e.g. `/root/awg-vps-kit`):
+Run on the server (the kit lives in `/opt/awg-vps-kit`; keep that clone):
 
 ```bash
-cd /root/awg-vps-kit
-./update.sh --check    # report only; exit code 0 = latest installed, 10 = update available
-./update.sh            # updates only if something is newer, otherwise says so
+/opt/awg-vps-kit/update.sh --check    # report only; exit code 0 = latest installed, 10 = update available
+/opt/awg-vps-kit/update.sh            # updates only if something is newer, otherwise says so
 ```
 
 It compares the installed versions (kit `VERSION`, `amneziawg-go` and `amneziawg-tools`
@@ -175,8 +174,8 @@ versions and are reported as "unknown", so the first update rebuilds. Options:
 ## Uninstall
 
 ```bash
-./uninstall.sh              # asks for confirmation
-./uninstall.sh --keep-config   # keep /etc/amnezia (keys, clients) for a reinstall
+/opt/awg-vps-kit/uninstall.sh              # asks for confirmation
+/opt/awg-vps-kit/uninstall.sh --keep-config   # keep /etc/amnezia (keys, clients) for a reinstall
 ```
 
 Removes the service, nftables table, ufw rules, sysctl file, binaries and `/etc/amnezia`.
