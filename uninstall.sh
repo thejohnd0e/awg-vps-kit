@@ -22,6 +22,17 @@ IF=awg0
 die() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
+# Nothing of ours on this machine: say so instead of asking to confirm a removal.
+found=0
+for f in "$DIR" /etc/amnezia /etc/systemd/system/awg-quick@.service /etc/sysctl.d/99-awg.conf \
+         /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg-quick \
+         /usr/local/bin/awg-client /opt/amneziawg /opt/awg-vps-kit; do
+  [ ! -e "$f" ] || { found=1; break; }
+done
+if [ "$found" = 0 ] && command -v ip >/dev/null && ip link show "$IF" >/dev/null 2>&1; then found=1; fi
+if [ "$found" = 0 ] && command -v pgrep >/dev/null && pgrep -f "amneziawg-go $IF\$" >/dev/null; then found=1; fi
+if [ "$found" = 0 ]; then echo "AWG VPS Kit is not installed here: nothing to remove."; exit 0; fi
+
 echo "This will stop awg-quick@$IF and remove:"
 echo "  - systemd unit, /etc/sysctl.d/99-awg.conf, nftables table awg_nat, ufw rules (if any)"
 echo "  - /usr/local/bin/{amneziawg-go,awg,awg-quick,awg-client}, /opt/amneziawg and /opt/awg-vps-kit"
