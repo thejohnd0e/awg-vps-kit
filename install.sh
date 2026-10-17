@@ -69,7 +69,10 @@ build_binaries() {  # build_binaries <outdir>
   # Go: distro package if it is new enough, otherwise the official tarball.
   need=$(awk '$1=="go"{print $2; exit}' "$src/awg-go/go.mod")
   have=
-  command -v go >/dev/null || apt-get install -y -qq golang-go >/dev/null 2>&1 || true
+  if ! command -v go >/dev/null; then
+    log "Installing golang-go from apt (can take a minute)"
+    apt-get install -y -qq golang-go >/dev/null 2>&1 || true
+  fi
   if command -v go >/dev/null; then have=$(go env GOVERSION | sed 's/^go//'); fi
   if [ -z "$have" ] || [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -1)" != "$need" ]; then
     log "Go $need or newer is needed (have: ${have:-none}), downloading the official toolchain"
@@ -79,7 +82,7 @@ build_binaries() {  # build_binaries <outdir>
     file=$(printf '%s\n' "$json" | grep -o "\"filename\": \"go[0-9.]*\.linux-$arch\.tar\.gz\"" | head -1 | cut -d'"' -f4)
     [ -n "$file" ] || die "cannot find a Go tarball for $arch"
     sha=$(printf '%s\n' "$json" | grep -A8 "\"filename\": \"$file\"" | grep '"sha256"' | head -1 | cut -d'"' -f4)
-    curl -fsSL "https://go.dev/dl/$file" -o "$src/go.tgz"
+    curl -fL -# "https://go.dev/dl/$file" -o "$src/go.tgz"
     [ "$(sha256sum "$src/go.tgz" | cut -d' ' -f1)" = "$sha" ] || die "Go tarball checksum mismatch"
     tar -C "$src" -xzf "$src/go.tgz"          # extracts to $src/go
     go_bin=$src/go/bin/go
@@ -88,7 +91,7 @@ build_binaries() {  # build_binaries <outdir>
   fi
   echo "go: $("$go_bin" version)"
 
-  log "Building amneziawg-go (low-memory settings, can take a few minutes)"
+  log "Building amneziawg-go (low-memory settings, can take a few minutes, no output until done)"
   ( cd "$src/awg-go" && GOFLAGS=-p=1 GOGC=50 "$go_bin" build -trimpath -ldflags="-s -w" -o "$out/amneziawg-go" . )
   log "Building awg and awg-quick"
   ( cd "$src/awg-tools/src" && make -j1 >/dev/null )
