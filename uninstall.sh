@@ -41,6 +41,10 @@ fi
 if command -v ip >/dev/null && ip link show "$IF" >/dev/null 2>&1 && [ -x /usr/local/bin/awg-quick ]; then
   WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go WG_QUICK_CONFIG_DIR=$DIR /usr/local/bin/awg-quick down "$IF" || true
 fi
+# amneziawg-go can outlive a failed or interrupted `up` and keep holding the UDP port
+if command -v pkill >/dev/null; then pkill -f "amneziawg-go $IF\$" 2>/dev/null || true; fi
+if command -v ip >/dev/null; then ip link delete "$IF" 2>/dev/null || true; fi
+rm -f "/var/run/amneziawg/$IF.sock"
 if command -v nft >/dev/null; then nft delete table ip awg_nat 2>/dev/null || true; fi
 
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
@@ -53,5 +57,11 @@ if command -v systemctl >/dev/null; then systemctl daemon-reload || true; fi
 rm -f /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg.real /usr/local/bin/awg-quick /usr/local/bin/awg-client
 rm -rf /opt/amneziawg
 if [ "$KEEP" = 0 ]; then rm -rf /etc/amnezia; fi
+
+if [ -n "$port" ] && command -v ss >/dev/null; then
+  sleep 1
+  busy=$(ss -H -ulnp "sport = :$port" 2>/dev/null || true)
+  [ -z "$busy" ] || printf 'warning: UDP port %s is still in use by another process:\n%s\n' "$port" "$busy"
+fi
 
 echo "Removed. Note: net.ipv4.ip_forward stays enabled until reboot; the cloned repo was not deleted."

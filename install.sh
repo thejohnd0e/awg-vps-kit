@@ -129,6 +129,12 @@ if [ -z "$ENDPOINT" ]; then
   [ -n "$ENDPOINT" ] || die "cannot detect the public IP, pass --endpoint"
 fi
 if [ -f "$DIR/$IF.conf" ]; then die "$DIR/$IF.conf already exists, refusing to overwrite (remove it first if this is intended)"; fi
+if [ "$NO_SERVICE" = 0 ]; then
+  busy=$(ss -H -ulnp "sport = :$PORT" 2>/dev/null || true)
+  [ -z "$busy" ] || die "UDP port $PORT is already in use:
+$busy
+stop that service or pick another port with --port"
+fi
 
 # ----------------------------------------------------------- parameters
 rnd32() { local v=0; while [ "$v" -lt 5 ]; do v=$(od -An -N4 -tu4 /dev/urandom | tr -d " "); done; echo "$v"; }
@@ -219,9 +225,10 @@ ExecStop=/usr/local/bin/awg-quick down %i
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now "awg-quick@$IF"
+  systemctl enable "awg-quick@$IF"
+  systemctl start "awg-quick@$IF" || true
   sleep 2
-  systemctl is-active "awg-quick@$IF" >/dev/null || { journalctl -u "awg-quick@$IF" -n 30 --no-pager; die "service did not start"; }
+  systemctl is-active "awg-quick@$IF" >/dev/null || { journalctl -u "awg-quick@$IF" -n 30 --no-pager; die "service did not start (config left in $DIR: remove it before re-running)"; }
   awg show "$IF" | head -5
 fi
 
