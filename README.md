@@ -41,28 +41,26 @@ Disk space and traffic needs are not measured: TBD.
 
 See "Requirements" above. The binaries are built
 from the official sources (`amnezia-vpn/amneziawg-go`, `amnezia-vpn/amneziawg-tools`),
-which takes a few minutes and works on 1 GB of RAM. Run the commands below on the server itself.
+which takes a few minutes and works on 1 GB of RAM. Run it on the server as root, from any folder:
 
 ```bash
-# on the server, as root (the kit goes to /opt/awg-vps-kit; run this from any folder):
 curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/install.sh | bash -s -- --subnet 10.79.0 --first-client user_01
 ```
 
-Started this way, `install.sh` installs `git` if needed, clones the kit into `/opt/awg-vps-kit`
-(or fast-forwards an existing clone there) and continues from that copy with the options you passed. If `curl` is
-missing, run `apt-get update && apt-get install -y curl` first.
+The script installs `git` if needed, puts the kit in `/opt/awg-vps-kit` (updating it if it is
+already there) and continues from that copy with the options you passed. If `curl` is missing,
+run `apt-get update && apt-get install -y curl` first.
 
-**Update** (later; details in "Updating"):
+**Update** (checks the latest versions and updates only if something is newer):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash -s -- --check   # only report
-curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash                 # apply: git pull, rebuild binaries if upstream has news, restart
+curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash
 ```
 
-**Uninstall** (details in "Uninstall"):
+**Uninstall** (asks for confirmation; details in "Uninstall"):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/uninstall.sh | bash              # asks for confirmation; add "-s -- --keep-config" after bash to keep keys and clients
+curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/uninstall.sh | bash
 ```
 
 `install.sh` options (all optional):
@@ -157,8 +155,7 @@ mismatched parameters.
 Run on the server, from any folder (the script refreshes the kit in `/opt/awg-vps-kit` first):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash -s -- --check   # report only; exit code 0 = latest installed, 10 = update available
-curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash                 # updates only if something is newer, otherwise says so
+curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash
 ```
 
 It compares the installed versions (kit `VERSION`, `amneziawg-go` and `amneziawg-tools`
@@ -167,15 +164,18 @@ commits; see `awg-client version`) with the latest ones and prints either
 The server config, keys and clients are not touched. A binary update restarts the
 service (clients reconnect in a few seconds); the previous binaries are kept in
 `/opt/amneziawg/prev`. Servers installed before `update.sh` existed have no recorded
-versions and are reported as "unknown", so the first update rebuilds. Options:
+versions and are reported as "unknown", so the first update rebuilds. Options go after
+`bash -s --`: `--check` (report only; exit code 0 = latest installed, 10 = update available),
 `--force`, `--bin-dir DIR`, `--no-restart`.
 
 ## Uninstall
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/uninstall.sh | bash                          # asks for confirmation
-curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/uninstall.sh | bash -s -- --keep-config      # keep /etc/amnezia (keys, clients) for a reinstall
+curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/uninstall.sh | bash
 ```
+
+It asks for confirmation. Add `-s -- --keep-config` after `bash` to keep `/etc/amnezia` (keys,
+clients) for a reinstall, or `-s -- --yes` to skip the question.
 
 Removes the service, nftables table, ufw rules, sysctl file, binaries, `/etc/amnezia` and the kit clone in `/opt/awg-vps-kit`.
 Installed apt packages are left in place.
