@@ -5,6 +5,10 @@ AmneziaWG (userspace `amneziawg-go`) on UDP 443 and the `awg-client` command to 
 clients. UDP-based, so it works where the ISP throttles TCP from foreign VPS hosters
 (see "When to use it").
 
+> **Part of a pair.** This kit and [xray-vps-kit](https://github.com/thejohnd0e/xray-vps-kit)
+> complement each other: AWG covers UDP, Xray (VLESS + REALITY + Vision) covers TCP. Use
+> whichever your network lets through, or run both on one server (see "Companion: xray-vps-kit").
+
 Files in this directory:
 
 | File | Purpose |
