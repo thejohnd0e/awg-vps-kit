@@ -1,5 +1,5 @@
 # AWG VPS Kit
-[![CI](https://github.com/thejohnd0e/awg-vps-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/thejohnd0e/awg-vps-kit/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Last commit](https://img.shields.io/github/last-commit/thejohnd0e/awg-vps-kit)](https://github.com/thejohnd0e/awg-vps-kit/commits/master) [![Stars](https://img.shields.io/github/stars/thejohnd0e/awg-vps-kit?style=flat)](https://github.com/thejohnd0e/awg-vps-kit/stargazers) ![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white) ![Platform](https://img.shields.io/badge/platform-Debian%20%7C%20Ubuntu-A81D33?logo=debian&logoColor=white) ![Protocol](https://img.shields.io/badge/protocol-AmneziaWG%20(UDP)-blue)
+[![CI](https://github.com/thejohnd0e/awg-vps-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/thejohnd0e/awg-vps-kit/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Last commit](https://img.shields.io/github/last-commit/thejohnd0e/awg-vps-kit)](https://github.com/thejohnd0e/awg-vps-kit/commits/master) ![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white) ![Platform](https://img.shields.io/badge/platform-Debian%20%7C%20Ubuntu-A81D33?logo=debian&logoColor=white) ![Protocol](https://img.shields.io/badge/protocol-AmneziaWG%20(UDP)-blue)
 
 AmneziaWG (userspace `amneziawg-go`) on UDP 443 and the `awg-client` command to manage
 clients. UDP-based, so it works where the ISP throttles TCP from foreign VPS hosters
@@ -8,16 +8,6 @@ clients. UDP-based, so it works where the ISP throttles TCP from foreign VPS hos
 > **Part of a pair.** This kit and [xray-vps-kit](https://github.com/thejohnd0e/xray-vps-kit)
 > complement each other: AWG covers UDP, Xray (VLESS + REALITY + Vision) covers TCP. Use
 > whichever your network lets through, or run both on one server (see "Companion: xray-vps-kit").
-
-Files in this directory:
-
-| File | Purpose |
-|---|---|
-| `install.sh` | one-shot installer for a fresh Debian/Ubuntu server; started via `curl \| bash` it first clones the kit to `/opt/awg-vps-kit` |
-| `awg-client` | client manager, installed to `/usr/local/bin` |
-| `update.sh` | checks and applies updates (kit + amneziawg binaries) |
-| `uninstall.sh` | removes everything `install.sh` created |
-| `README.md` | this file, also copied to `/etc/amnezia/amneziawg/README.md` on the server |
 
 ## Requirements
 
