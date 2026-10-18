@@ -10,6 +10,7 @@
 #     --bin-dir DIR         use prebuilt amneziawg-go, awg, awg-quick from DIR (skip build)
 #     --build-only DIR      only build the three binaries into DIR and exit
 #     --first-client NAME   create a client right after install       default: none
+#     --protocol 1.0|1.5|2.0  AmneziaWG protocol version                  default: 1.0 (menu 1/2/3 in a terminal)
 #     --no-service          write files only: no systemd, sysctl, firewall (for testing)
 #     --allow-outdated      do not stop if this git checkout is behind upstream
 set -euo pipefail
@@ -32,7 +33,7 @@ if [ ! -f "$(dirname "$0")/awg-client" ]; then
   exec "$KIT/install.sh" "$@"
 fi
 
-SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; NO_SERVICE=0; ALLOW_OUTDATED=0
+SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; PROTOCOL=; NO_SERVICE=0; ALLOW_OUTDATED=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --subnet) SUBNET=$2; shift 2 ;;
@@ -42,9 +43,10 @@ while [ $# -gt 0 ]; do
     --bin-dir) BIN_DIR=$2; shift 2 ;;
     --build-only) BUILD_ONLY=$2; shift 2 ;;
     --first-client) FIRST=$2; shift 2 ;;
+    --protocol) PROTOCOL=${2:-}; shift 2 ;;
     --no-service) NO_SERVICE=1; shift ;;
     --allow-outdated) ALLOW_OUTDATED=1; shift ;;
-    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
   esac
 done
@@ -58,6 +60,21 @@ die() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
 [[ "$SUBNET" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || die "--subnet must look like 10.79.0"
 [[ "$PORT" =~ ^[0-9]+$ ]] || die "--port must be a number"
+
+# Protocol version: asked first, before the slow steps; silently 1.0 without a terminal.
+if [ -z "$PROTOCOL" ] && [ -z "$BUILD_ONLY" ] && ( : < /dev/tty ) 2>/dev/null; then
+  {
+    echo "AmneziaWG protocol version:"
+    echo "  1 - version 1.0  classic: Jc/Jmin/Jmax, S1/S2, H1-H4 (works with every client)"
+    echo "  2 - version 1.5  adds I1 signature packet (QUIC-like), client side; needs a client with 1.5 support"
+    echo "  3 - version 2.0  adds S3/S4 and H1-H4 as ranges; needs a client with 2.0 support"
+    printf 'Choose 1-3 [1]: '
+  } > /dev/tty
+  read -r PROTOCOL < /dev/tty || PROTOCOL=
+  case "$PROTOCOL" in 1) PROTOCOL=1.0 ;; 2) PROTOCOL=1.5 ;; 3) PROTOCOL=2.0 ;; esac
+fi
+PROTOCOL=${PROTOCOL:-1.0}
+case "$PROTOCOL" in 1.0|1.5|2.0) ;; *) die "--protocol must be 1.0, 1.5 or 2.0" ;; esac
 command -v apt-get >/dev/null || die "only Debian/Ubuntu (apt) is supported"
 export DEBIAN_FRONTEND=noninteractive
 
@@ -168,6 +185,18 @@ done
 S1=$(shuf -i 15-150 -n 1); S2=$(shuf -i 15-150 -n 1)
 while [ $((S1 + 56)) -eq "$S2" ]; do S2=$(shuf -i 15-150 -n 1); done
 
+# 2.0: S3/S4 and H1-H4 as non-overlapping ranges (8 distinct values, sorted, paired).
+S3=$(shuf -i 8-64 -n 1); S4=$(shuf -i 4-32 -n 1)
+if [ "$PROTOCOL" = 2.0 ]; then
+  R=()
+  while [ ${#R[@]} -lt 8 ]; do
+    v=$(rnd32)
+    case " ${R[*]} " in *" $v "*) ;; *) R+=("$v") ;; esac
+  done
+  mapfile -t R < <(printf '%s\n' "${R[@]}" | sort -n)
+  H=("${R[0]}-${R[1]}" "${R[2]}-${R[3]}" "${R[4]}-${R[5]}" "${R[6]}-${R[7]}")
+fi
+
 mkdir -p "$DIR/clients"; chmod 700 "$DIR"; umask 077
 awg genkey | tee "$DIR/srv.key" | awg pubkey > "$DIR/srv.pub"
 [ ! -f "$BIN_DIR/versions" ] || install -m 644 "$BIN_DIR/versions" "$DIR/versions"
@@ -176,6 +205,11 @@ awg genkey | tee "$DIR/srv.key" | awg pubkey > "$DIR/srv.pub"
   echo "commit=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 } > "$DIR/kit-version"
 echo "$ENDPOINT" > "$DIR/endpoint"
+{
+  echo "protocol=$PROTOCOL"
+  # 1.5: QUIC-like Initial header, random connection id, then random payload (client side only)
+  [ "$PROTOCOL" != 1.5 ] || echo "I1=<b 0xc00000000108><r 8><b 0x00><r 64>"
+} > "$DIR/protocol"
 
 # -------------------------------------------------------------- firewall
 # NAT through nftables (own table, removed on stop).
@@ -211,6 +245,7 @@ H4 = ${H[3]}
 PostUp = nft -f $DIR/nat-up.nft
 PostDown = nft delete table ip awg_nat
 EOF
+[ "$PROTOCOL" != 2.0 ] || printf 'S3 = %s\nS4 = %s\n' "$S3" "$S4" >> "$DIR/$IF.conf"
 install -m 644 "$HERE/README.md" "$DIR/README.md"
 
 if [ "$NO_SERVICE" = 1 ]; then
@@ -257,7 +292,7 @@ fi
 cat <<EOF
 
 AmneziaWG server is ready.
-  Address:  $ENDPOINT:$PORT/udp   tunnel $SUBNET.0/24   NAT via $WAN_IF
+  Address:  $ENDPOINT:$PORT/udp   tunnel $SUBNET.0/24   protocol $PROTOCOL   NAT via $WAN_IF
   Config:   $DIR/$IF.conf
   Help:     awg-client help      (full notes: $DIR/README.md)
 If the provider has an external firewall / security group, open UDP $PORT there.

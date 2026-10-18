@@ -73,15 +73,31 @@ curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/unins
 | `--wan-if eth0` | from default route | interface used for NAT |
 | `--bin-dir DIR` | build | use prebuilt `amneziawg-go`, `awg`, `awg-quick` from `DIR` (copy them from another server, e.g. `/opt/amneziawg/bin`, to skip the build) |
 | `--build-only DIR` | | only build the binaries into `DIR` and exit |
+| `--protocol 1.0\|1.5\|2.0` | `1.0` (asked in a terminal) | AmneziaWG protocol version, see below |
 | `--first-client NAME` | none | create a client at the end and print its config |
 | `--no-service` | | write files only (no systemd, sysctl, firewall), for testing |
 | `--allow-outdated` | | install even if this git checkout is behind upstream (by default it stops and asks for `git pull`) |
+
+**Protocol version.** Without `--protocol`, an interactive run asks for it first (1 = 1.0, 2 = 1.5, 3 = 2.0; Enter = 1.0); with
+`curl | bash` the question is still asked through the terminal, and without a terminal 1.0 is used.
+The choice is recorded in `/etc/amnezia/amneziawg/protocol`, `awg-client` follows it and `update.sh`
+never changes it.
+
+| Version | Adds | Notes |
+|---|---|---|
+| 1.0 | `Jc/Jmin/Jmax`, `S1/S2`, `H1`-`H4` (single numbers) | works with every client |
+| 1.5 | `I1` signature packet (QUIC-like), client side only | client needs 1.5 support |
+| 2.0 | `S3/S4`, `H1`-`H4` as ranges `x-y` | client needs 2.0 support; the values must match on both ends |
+
+Later "3+" features (header protection, content padding, timings) are not supported. Old clients
+(e.g. the `amnezia-bridge` container with awg-tools 2021) do not know the new fields: re-issue
+their configs or stay on 1.0.
 
 What the installer does:
 
 1. builds (or takes) `amneziawg-go`, `awg`, `awg-quick` and installs them to `/usr/local/bin`;
 2. installs `qrencode`, `nftables`, `iproute2`;
-3. generates server keys and random obfuscation parameters (`S1`, `S2`, `H1`-`H4`; `Jc/Jmin/Jmax` fixed at 5/40/900);
+3. generates server keys and random obfuscation parameters (`S1`, `S2`, `H1`-`H4`, plus `S3/S4` for 2.0; `Jc/Jmin/Jmax` fixed at 5/40/900);
 4. writes `/etc/amnezia/amneziawg/awg0.conf` and the NAT rules (nftables table `awg_nat`, removed when the service stops);
 5. enables `net.ipv4.ip_forward`, and if `ufw` is active opens the UDP port and adds a forwarding rule;
 6. creates and starts the systemd service `awg-quick@awg0`.
@@ -134,7 +150,7 @@ awg-client version          # installed kit and amneziawg versions
   a ZeroBlock section of type `vpn` with that interface.
 
 The obfuscation parameters must be identical on server and client; `awg-client` copies
-them from `awg0.conf`. Do not change them on a server that has clients unless you
+them from `awg0.conf` (and `I1` from `protocol`). Do not change them on a server that has clients unless you
 re-issue all client configs.
 
 ## Service and diagnostics

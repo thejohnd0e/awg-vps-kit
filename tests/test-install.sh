@@ -29,12 +29,15 @@ fi
 ok "install.sh refuses to overwrite an existing config"
 
 # No live interface in the container: keep real key generation, stub the rest.
-mv /usr/local/bin/awg /usr/local/bin/awg.real
-cat > /usr/local/bin/awg <<'EOS'
+stub_awg() {
+  mv /usr/local/bin/awg /usr/local/bin/awg.real
+  cat > /usr/local/bin/awg <<'EOS'
 #!/bin/sh
 case "$1" in genkey|pubkey|genpsk) exec /usr/local/bin/awg.real "$@" ;; *) exit 0 ;; esac
 EOS
-chmod 755 /usr/local/bin/awg
+  chmod 755 /usr/local/bin/awg
+}
+stub_awg
 
 awg-client add alice >/dev/null
 awg-client add bob >/dev/null
@@ -73,5 +76,33 @@ for p in /etc/amnezia /opt/amneziawg /usr/local/bin/awg /usr/local/bin/awg-clien
   [ ! -e "$p" ] || fail "uninstall left $p"
 done
 ok "uninstall.sh removed everything"
+
+# Protocol versions: server fields, client fields, recorded choice.
+for proto in 1.5 2.0; do
+  ./install.sh --no-service --protocol "$proto" --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
+  stub_awg
+  has "$DIR/protocol" "^protocol=$proto\$"
+  awg-client add dave >/dev/null
+  cfg=$DIR/clients/dave.conf
+  awg-client version | grep -q "^protocol: $proto\$" || fail "version: protocol $proto not shown"
+  case "$proto" in
+    1.5)
+      has "$cfg" '^I1 = <b 0x'
+      grep -q '^I1' "$DIR/awg0.conf" && fail "I1 must stay client side"
+      grep -Eq '^(S3|S4) ' "$cfg" && fail "1.5 must not have S3/S4" ;;
+    2.0)
+      has "$DIR/awg0.conf" '^S3 = '; has "$DIR/awg0.conf" '^S4 = '
+      has "$cfg" '^S3 = '; has "$cfg" '^S4 = '
+      grep -Eq '^H[1-4] = [0-9]+-[0-9]+$' "$cfg" || fail "2.0 H1-H4 must be ranges"
+      [ "$(grep -cE '^H[1-4] = [0-9]+-[0-9]+$' "$cfg")" = 4 ] || fail "2.0 needs four H ranges"
+      grep -E '^H[1-4] =' "$cfg" | awk '{split($3,r,"-"); print r[1]; print r[2]}' | sort -n -c || fail "H ranges overlap or are unordered" ;;
+  esac
+  ok "protocol $proto"
+  ./uninstall.sh --yes >/dev/null
+done
+if ./install.sh --no-service --protocol 3.0 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null 2>&1; then
+  fail "unknown protocol must be rejected"
+fi
+ok "unknown protocol rejected"
 
 echo "All tests passed"

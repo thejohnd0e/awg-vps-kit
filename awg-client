@@ -34,11 +34,12 @@ kv() {  # kv <file> <key>: value from a key=value file, empty if missing
   awk -F= -v k="$2" '$1==k{print $2; exit}' "$1" 2>/dev/null || true
 }
 show_version() {
-  local v c go tools
+  local v c go tools pr
   v=$(kv "$DIR/kit-version" version); c=$(kv "$DIR/kit-version" commit)
   go=$(kv "$DIR/versions" amneziawg-go); tools=$(kv "$DIR/versions" amneziawg-tools)
   echo "awg-vps-kit: ${v:-unknown} (${c:-unknown})"
   go=${go:-unknown}; tools=${tools:-unknown}
+  pr=$(kv "$DIR/protocol" protocol); echo "protocol: ${pr:-1.0}"
   echo "amneziawg-go: ${go:0:7}"
   echo "amneziawg-tools: ${tools:0:7}"
 }
@@ -60,7 +61,13 @@ qr() { if command -v qrencode >/dev/null; then echo; qrencode -t ansiutf8 < "$1"
 # config between separator lines (only on screen, not in the file), then the QR code
 SEP=############################################################
 print_conf() { echo "$SEP"; cat "$CL/$1.conf"; echo "$SEP"; qr "$CL/$1.conf"; }
-gen_conf() {  # name ip key psk
+extra_fields() {  # protocol-specific lines (S3/S4 from the server config, I1 from the protocol file)
+  local k v
+  for k in S3 S4; do v=$(iface_val "$k"); [ -z "$v" ] || echo "$k = $v"; done
+  for k in I1 I2 I3 I4 I5; do v=$(kv "$DIR/protocol" "$k"); [ -z "$v" ] || echo "$k = $v"; done
+}
+gen_conf() { gen_conf_raw "$@" | sed '/^H4 = /{n;/^$/d}'; }
+gen_conf_raw() {  # name ip key psk
   local ip=$2 key=$3 psk=$4
   cat <<EOF
 [Interface]
@@ -77,6 +84,7 @@ H1 = $(iface_val H1)
 H2 = $(iface_val H2)
 H3 = $(iface_val H3)
 H4 = $(iface_val H4)
+$(extra_fields)
 
 [Peer]
 PublicKey = $(cat "$DIR/srv.pub")
