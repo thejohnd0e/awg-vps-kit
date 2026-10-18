@@ -19,8 +19,9 @@ has "$DIR/nat-up.nft" 'ip saddr 10.79.0.0/24 oifname "eth0" masquerade'
 [ "$(grep -E '^H[1-4] =' "$DIR/awg0.conf" | awk '{print $3}' | sort -u | wc -l)" = 4 ] || fail "H1-H4 not distinct"
 ok "install.sh wrote server files"
 kit_version=$(tr -d '\r\n ' < VERSION)
-awg-client version | grep -q "^awg-vps-kit: $kit_version " || fail "awg-client version: wrong kit version"
-awg-client version | grep -Eq '^amneziawg-go: [0-9a-f]{7}$' || fail "awg-client version: no amneziawg-go commit"
+ver=$(awg-client version)
+echo "$ver" | grep -q "^awg-vps-kit: $kit_version " || fail "awg-client version: wrong kit version"
+echo "$ver" | grep -Eq '^amneziawg-go: [0-9a-f]{7}$' || fail "awg-client version: no amneziawg-go commit"
 ok "awg-client version"
 
 if ./install.sh --no-service --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null 2>&1; then
@@ -84,7 +85,7 @@ for proto in 1.5 2.0; do
   has "$DIR/protocol" "^protocol=$proto\$"
   awg-client add dave >/dev/null
   cfg=$DIR/clients/dave.conf
-  awg-client version | grep -q "^protocol: $proto\$" || fail "version: protocol $proto not shown"
+  [ "$(awg-client version | grep "^protocol:")" = "protocol: $proto" ] || fail "version: protocol $proto not shown"
   case "$proto" in
     1.5)
       has "$cfg" '^I1 = <b 0x'
