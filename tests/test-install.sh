@@ -101,6 +101,30 @@ for proto in 1.5 2.0; do
   ok "protocol $proto"
   ./uninstall.sh --yes >/dev/null
 done
+# Switching the protocol of an installed server: fields rewritten, keys and clients kept.
+./install.sh --no-service --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
+stub_awg
+awg-client add erin >/dev/null
+[ "$(awg-client protocol)" = 1.0 ] || fail "protocol: fresh server must report 1.0"
+key=$(cat "$DIR/clients/erin.key"); s1=$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")
+for proto in 2.0 1.5 1.0; do
+  awg-client protocol "$proto" >/dev/null
+  [ "$(awg-client protocol)" = "$proto" ] || fail "protocol: $proto not recorded"
+  [ "$(grep -c '^\[Peer\]' "$DIR/awg0.conf")" = 1 ] || fail "protocol $proto: peer lost"
+  [ "$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")" = "$s1" ] || fail "protocol $proto: S1 changed"
+  [ "$(awk '/^\[Peer\]/{exit} /^(S3|S4|H[1-4]) =/' "$DIR/awg0.conf" | wc -l)" = "$([ "$proto" = 2.0 ] && echo 6 || echo 4)" ] || fail "protocol $proto: wrong server fields"
+  out=$(awg-client show erin)
+  echo "$out" | grep -q "^PrivateKey = $key\$" || fail "protocol $proto: client key changed"
+  case "$proto" in
+    2.0) echo "$out" | grep -Eq '^H1 = [0-9]+-[0-9]+$' || fail "2.0: client H1 not a range"; echo "$out" | grep -q '^S3 = ' || fail "2.0: client has no S3" ;;
+    1.5) echo "$out" | grep -q '^I1 = ' || fail "1.5: client has no I1" ;;
+    1.0) echo "$out" | grep -Eq '^(S3|S4|I1) ' && fail "1.0 client has newer fields" ;;
+  esac
+done
+if awg-client protocol 3.0 >/dev/null 2>&1; then fail "protocol 3.0 must be rejected"; fi
+ok "awg-client protocol switches 1.0 / 1.5 / 2.0 and keeps clients"
+./uninstall.sh --yes >/dev/null
+
 if ./install.sh --no-service --protocol 3.0 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null 2>&1; then
   fail "unknown protocol must be rejected"
 fi

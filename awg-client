@@ -16,6 +16,7 @@ Usage:
   awg-client list            list all clients with their tunnel addresses
   awg-client remove <name>   remove a client (takes effect immediately)
   awg-client version         show installed kit and amneziawg versions
+  awg-client protocol [1.0|1.5|2.0]   show or change the protocol version of this server
   awg-client help            this help
 
 Notes:
@@ -26,6 +27,8 @@ Notes:
   - Client files: /etc/amnezia/amneziawg/clients/<name>.{conf,key,pub,psk}
   - One config per device: two devices on the same config kick each other off.
   - Removing a client disconnects that device immediately.
+  - `protocol 2.0` rewrites the server obfuscation fields and restarts the tunnel: every client
+    must then get its new config (`awg-client show <name>`), old configs stop working.
   - Details: /etc/amnezia/amneziawg/README.md
 EOF
 }
@@ -94,6 +97,21 @@ AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
 }
+rnd32() { local v=0; while [ "$v" -lt 5 ]; do v=$(od -An -N4 -tu4 /dev/urandom | tr -d " "); done; echo "$v"; }
+# Server fields of a protocol version, S3/S4/H1-H4 lines (same rules as install.sh).
+protocol_fields() {
+  local v i; local -a H R
+  if [ "$1" = 2.0 ]; then
+    echo "S3 = $(shuf -i 8-64 -n 1)"; echo "S4 = $(shuf -i 4-32 -n 1)"
+    R=(); while [ ${#R[@]} -lt 8 ]; do v=$(rnd32); case " ${R[*]} " in *" $v "*) ;; *) R+=("$v") ;; esac; done
+    mapfile -t R < <(printf '%s
+' "${R[@]}" | sort -n)
+    H=("${R[0]}-${R[1]}" "${R[2]}-${R[3]}" "${R[4]}-${R[5]}" "${R[6]}-${R[7]}")
+  else
+    H=(); while [ ${#H[@]} -lt 4 ]; do v=$(rnd32); case " ${H[*]} " in *" $v "*) ;; *) H+=("$v") ;; esac; done
+  fi
+  for i in 0 1 2 3; do echo "H$((i+1)) = ${H[$i]}"; done
+}
 peer_ip() {  # tunnel address of the peer commented "# <name>"
   awk -v n="# $1" '/^\[Peer\]/{p=1;m=0;next} p&&$0==n{m=1} p&&m&&/^AllowedIPs/{sub(/\/32.*/,"",$3);print $3;exit}' "$CONF"
 }
@@ -108,6 +126,28 @@ case "$cmd" in
     if [ -z "$ip" ] || [ ! -f "$CL/$name.key" ]; then echo "no such client: $name (see: awg-client list)" >&2; exit 1; fi
     gen_conf "$name" "$ip" "$(cat "$CL/$name.key")" "$(cat "$CL/$name.psk")" > "$CL/$name.conf"
     print_conf "$name"
+    exit 0 ;;
+  protocol)
+    cur=$(kv "$DIR/protocol" protocol); cur=${cur:-1.0}
+    [ -n "$name" ] || { echo "$cur"; exit 0; }
+    case "$name" in 1.0|1.5|2.0) ;; *) echo "protocol must be 1.0, 1.5 or 2.0" >&2; exit 1 ;; esac
+    [ "$name" != "$cur" ] || { echo "protocol is already $cur"; exit 0; }
+    cp "$CONF" "$CONF.bak-protocol-$cur"
+    protocol_fields "$name" > "$CONF.fields"
+    # the new fields replace S3/S4/H1-H4 in the [Interface] section, right after S2
+    awk -v f="$CONF.fields" '/^\[Peer\]/{p=1} !p&&/^(S3|S4|H[1-4]) =/{next} {print} !p&&/^S2 =/{while((getline l<f)>0)print l}' "$CONF" > "$CONF.tmp"
+    mv "$CONF.tmp" "$CONF"; rm -f "$CONF.fields"
+    {
+      echo "protocol=$name"
+      [ "$name" != 1.5 ] || echo "I1=<b 0xc00000000108><r 8><b 0x00><r 64>"
+    } > "$DIR/protocol"
+    echo "protocol $cur -> $name (backup: $CONF.bak-protocol-$cur)"
+    if systemctl is-active --quiet "awg-quick@$IF" 2>/dev/null; then
+      systemctl restart "awg-quick@$IF"; echo "tunnel restarted; all clients are offline until they get the new config"
+    else
+      echo "tunnel is not running as a service: restart it to apply"
+    fi
+    echo "New configs: awg-client show <name> for:"; "$0" list | cut -f2 | sed 's/^/  /'
     exit 0 ;;
   remove)
     valid "$name"

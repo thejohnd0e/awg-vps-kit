@@ -118,6 +118,7 @@ awg-client show <name>     # print config + QR code again
 awg-client list            # clients and their tunnel addresses
 awg-client remove <name>   # remove a client
 awg-client version          # installed kit and amneziawg versions
+awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 (without an argument: show it)
 ```
 
 - Name: letters, digits, `_`, `-`, up to 32 characters.
@@ -138,6 +139,12 @@ awg-client version          # installed kit and amneziawg versions
   `endpoint_port '443'`, `allowed_ips '0.0.0.0/0'`, `persistent_keepalive '25'`,
   **`route_allowed_ips '0'`** (routing is done by ZeroBlock, not by the interface). Then add
   a ZeroBlock section of type `vpn` with that interface.
+
+**Changing the protocol of a running server:** `awg-client protocol 2.0` (or `1.5`, `1.0`) rewrites the
+`S3/S4/H1-H4` fields of `awg0.conf` (backup `awg0.conf.bak-protocol-<old>`), keeps the keys, address
+plan and every client, and restarts the tunnel. All clients are offline until each gets its new
+config (`awg-client show <name>`); the old configs stop working. The version does not change speed
+(measured: 1.0, 1.5 and 2.0 give the same throughput within the noise).
 
 The obfuscation parameters must be identical on server and client; `awg-client` copies
 them from `awg0.conf` (and `I1` from `protocol`). Do not change them on a server that has clients unless you
