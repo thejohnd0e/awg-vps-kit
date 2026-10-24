@@ -230,6 +230,19 @@ Pure Bash, no build step. Check syntax with `bash -n install.sh awg-client` (and
 `shellcheck` if installed). `./install.sh --no-service` writes files only, for a dry
 run on a Linux host. CI also runs `tests/test-install.sh` in Debian and Ubuntu containers (install, client management, update, uninstall; no live tunnel).
 
+## Related Projects
+
+These projects complement each other: the kits set up the servers, and the proxy containers bring a
+tunnel into your local network as a plain HTTP/SOCKS5 proxy.
+
+- [xray-vps-kit](https://github.com/thejohnd0e/xray-vps-kit): installer, client manager and updater for an
+  **Xray VLESS + REALITY + Vision** server over TCP. Use it next to this kit or instead of it (see
+  "Companion: xray-vps-kit").
+- [AmneziaWG-to-Proxy](https://github.com/thejohnd0e/AmneziaWG-to-Proxy): a Docker container that turns the
+  client config printed by `awg-client show NAME` into an HTTP/SOCKS5 proxy with automatic config failover.
+- [VLESS-to-HTTP](https://github.com/thejohnd0e/VLESS-to-HTTP): the same idea for **VLESS + REALITY**, a
+  container that turns a `vless://` link into an HTTP/SOCKS5 proxy.
+
 ## License
 
 MIT, see `LICENSE`.
