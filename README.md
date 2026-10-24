@@ -5,9 +5,18 @@ AmneziaWG (userspace `amneziawg-go`) on UDP 443 and the `awg-client` command to 
 clients. UDP-based, so it works where the ISP throttles TCP from foreign VPS hosters
 (see "When to use it").
 
-> **Part of a pair.** This kit and [xray-vps-kit](https://github.com/thejohnd0e/xray-vps-kit)
-> complement each other: AWG covers UDP, Xray (VLESS + REALITY + Vision) covers TCP. Use
-> whichever your network lets through, or run both on one server (see "Companion: xray-vps-kit").
+## Related Projects
+
+These projects complement each other: the kits set up the servers, and the proxy containers bring a
+tunnel into your local network as a plain HTTP/SOCKS5 proxy.
+
+- [xray-vps-kit](https://github.com/thejohnd0e/xray-vps-kit): installer, client manager and updater for an
+  **Xray VLESS + REALITY + Vision** server over TCP. AWG covers UDP, Xray covers TCP: use whichever your
+  network lets through, or run both on one server (see "Companion: xray-vps-kit").
+- [AmneziaWG-to-Proxy](https://github.com/thejohnd0e/AmneziaWG-to-Proxy): a Docker container that turns the
+  client config printed by `awg-client show NAME` into an HTTP/SOCKS5 proxy with automatic config failover.
+- [VLESS-to-HTTP](https://github.com/thejohnd0e/VLESS-to-HTTP): the same idea for **VLESS + REALITY**, a
+  container that turns a `vless://` link into an HTTP/SOCKS5 proxy.
 
 ## Requirements
 
@@ -229,19 +238,6 @@ one server (AWG on UDP 443, Xray on TCP 443).
 Pure Bash, no build step. Check syntax with `bash -n install.sh awg-client` (and
 `shellcheck` if installed). `./install.sh --no-service` writes files only, for a dry
 run on a Linux host. CI also runs `tests/test-install.sh` in Debian and Ubuntu containers (install, client management, update, uninstall; no live tunnel).
-
-## Related Projects
-
-These projects complement each other: the kits set up the servers, and the proxy containers bring a
-tunnel into your local network as a plain HTTP/SOCKS5 proxy.
-
-- [xray-vps-kit](https://github.com/thejohnd0e/xray-vps-kit): installer, client manager and updater for an
-  **Xray VLESS + REALITY + Vision** server over TCP. Use it next to this kit or instead of it (see
-  "Companion: xray-vps-kit").
-- [AmneziaWG-to-Proxy](https://github.com/thejohnd0e/AmneziaWG-to-Proxy): a Docker container that turns the
-  client config printed by `awg-client show NAME` into an HTTP/SOCKS5 proxy with automatic config failover.
-- [VLESS-to-HTTP](https://github.com/thejohnd0e/VLESS-to-HTTP): the same idea for **VLESS + REALITY**, a
-  container that turns a `vless://` link into an HTTP/SOCKS5 proxy.
 
 ## License
 
