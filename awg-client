@@ -157,7 +157,9 @@ case "$cmd" in
     exit 0 ;;
   mtu)
     [ -n "$name" ] || { client_mtu; exit 0; }
-    [[ "$name" =~ ^[0-9]+$ ]] && [ "$name" -ge 1280 ] && [ "$name" -le 1500 ] || { echo "mtu must be a number from 1280 to 1500" >&2; exit 1; }
+    if ! [[ "$name" =~ ^[0-9]+$ ]] || [ "$name" -lt 1280 ] || [ "$name" -gt 1500 ]; then
+      echo "mtu must be a number from 1280 to 1500" >&2; exit 1
+    fi
     echo "$name" > "$DIR/client-mtu"
     echo "client MTU = $name (new and re-shown configs; devices must re-import: awg-client show <name>)"
     exit 0 ;;
