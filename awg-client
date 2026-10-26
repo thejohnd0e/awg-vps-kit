@@ -17,6 +17,7 @@ Usage:
   awg-client remove <name>   remove a client (takes effect immediately)
   awg-client version         show installed kit and amneziawg versions
   awg-client protocol [1.0|1.5|2.0]   show or change the protocol version of this server
+  awg-client mtu [1280-1500]          show or set the MTU written into client configs (default 1420)
   awg-client help            this help
 
 Notes:
@@ -29,6 +30,8 @@ Notes:
   - Removing a client disconnects that device immediately.
   - `protocol 2.0` rewrites the server obfuscation fields and restarts the tunnel: every client
     must then get its new config (`awg-client show <name>`), old configs stop working.
+  - `mtu N` only changes the MTU line of client configs (server awg0 is not touched, no restart).
+    Devices that are already set up keep their old MTU until they import `awg-client show <name>` again.
   - Details: /etc/amnezia/amneziawg/README.md
 EOF
 }
@@ -59,6 +62,9 @@ umask 077
 mkdir -p "$CL"
 
 valid() { [[ "$1" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "name: letters, digits, _ and - only (max 32); see: awg-client help" >&2; exit 1; }; }
+client_mtu() {  # MTU for client configs: $DIR/client-mtu, default 1420 (1500 minus 80 bytes of tunnel overhead)
+  local m; m=$(cat "$DIR/client-mtu" 2>/dev/null || true); echo "${m:-1420}"
+}
 iface_val() { awk -v k="$1" '/^\[Peer\]/{exit} $1==k && $2=="="{print $3; exit}' "$CONF"; }
 qr() { if command -v qrencode >/dev/null; then echo; qrencode -t ansiutf8 < "$1"; fi; }
 # config between separator lines (only on screen, not in the file), then the QR code
@@ -77,7 +83,7 @@ gen_conf_raw() {  # name ip key psk
 PrivateKey = $key
 Address = $ip/32
 DNS = 1.1.1.1
-MTU = $(iface_val MTU)
+MTU = $(client_mtu)
 Jc = $(iface_val Jc)
 Jmin = $(iface_val Jmin)
 Jmax = $(iface_val Jmax)
@@ -148,6 +154,12 @@ case "$cmd" in
       echo "tunnel is not running as a service: restart it to apply"
     fi
     echo "New configs: awg-client show <name> for:"; "$0" list | cut -f2 | sed 's/^/  /'
+    exit 0 ;;
+  mtu)
+    [ -n "$name" ] || { client_mtu; exit 0; }
+    [[ "$name" =~ ^[0-9]+$ ]] && [ "$name" -ge 1280 ] && [ "$name" -le 1500 ] || { echo "mtu must be a number from 1280 to 1500" >&2; exit 1; }
+    echo "$name" > "$DIR/client-mtu"
+    echo "client MTU = $name (new and re-shown configs; devices must re-import: awg-client show <name>)"
     exit 0 ;;
   remove)
     valid "$name"

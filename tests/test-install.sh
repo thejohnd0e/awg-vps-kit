@@ -55,6 +55,17 @@ echo "$out" | grep -q "^H1 = $h1\$" || fail "show: H1 differs from server"
 [ "$(grep -c "^####" "$DIR/clients/alice.conf")" = 0 ] || fail "separator leaked into the client file"
 ok "show prints a matching client config"
 
+echo "$out" | grep -q '^MTU = 1420$' || fail "show: default client MTU must be 1420"
+grep -q '^MTU = 1280$' "$DIR/awg0.conf" || fail "server MTU must stay 1280"
+[ "$(awg-client mtu)" = 1420 ] || fail "mtu without argument must print 1420"
+if awg-client mtu 1200 >/dev/null 2>&1; then fail "mtu below 1280 must fail"; fi
+if awg-client mtu abc >/dev/null 2>&1; then fail "non-numeric mtu must fail"; fi
+awg-client mtu 1360 >/dev/null
+out=$(awg-client show alice)
+echo "$out" | grep -q '^MTU = 1360$' || fail "show must use the configured client MTU"
+awg-client mtu 1420 >/dev/null
+ok "client MTU defaults to 1420, is configurable, server MTU unchanged"
+
 if awg-client add alice >/dev/null 2>&1; then fail "duplicate add must fail"; fi
 if awg-client add 'bad name' >/dev/null 2>&1; then fail "invalid name must fail"; fi
 ok "duplicate and invalid names rejected"

@@ -128,6 +128,7 @@ awg-client list            # clients and their tunnel addresses
 awg-client remove <name>   # remove a client
 awg-client version          # installed kit and amneziawg versions
 awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 (without an argument: show it)
+awg-client mtu 1420         # MTU written into client configs (without an argument: show it; default 1420)
 ```
 
 - Name: letters, digits, `_`, `-`, up to 32 characters.
@@ -137,6 +138,10 @@ awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 (wi
 - Before every change a copy is saved as `awg0.conf.bak-awg-client`.
 - One config = one device. Two devices on the same config kick each other off.
 - Do not remove a client that is in use: that device loses its VPN immediately.
+- Client MTU is 1420 by default (1500 minus the tunnel overhead). Some sites (for example 2ip.io)
+  flag a tunnel MTU of 1280 as "VPN fingerprint". The server interface stays at 1280; `awg-client mtu N`
+  (1280-1500) changes only the client configs. A device keeps its old MTU until it imports
+  `awg-client show <name>` again. If the server's own uplink MTU is below 1500, use WAN MTU minus 80.
 
 ### Using a client config
 
@@ -144,7 +149,7 @@ awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 (wi
   Amnezia VPN app.
 - **OpenWrt (ZeroBlock / RouteRich):** create a network interface with
   `proto 'amneziawg'`, `awg_jc`, `awg_jmin`, `awg_jmax`, `awg_s1`, `awg_s2`, `awg_h1`-`awg_h4`,
-  `mtu '1280'`, and one peer with `public_key`, `preshared_key`, `endpoint_host`,
+  `mtu '1420'`, and one peer with `public_key`, `preshared_key`, `endpoint_host`,
   `endpoint_port '443'`, `allowed_ips '0.0.0.0/0'`, `persistent_keepalive '25'`,
   **`route_allowed_ips '0'`** (routing is done by ZeroBlock, not by the interface). Then add
   a ZeroBlock section of type `vpn` with that interface.
