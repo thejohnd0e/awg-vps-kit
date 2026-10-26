@@ -18,6 +18,11 @@ has "$DIR/awg0.conf" 'ListenPort = 443'
 has "$DIR/nat-up.nft" 'ip saddr 10.79.0.0/24 oifname "eth0" masquerade'
 [ "$(grep -E '^H[1-4] =' "$DIR/awg0.conf" | awk '{print $3}' | sort -u | wc -l)" = 4 ] || fail "H1-H4 not distinct"
 ok "install.sh wrote server files"
+
+[ -x /usr/local/bin/block-ping ] || fail "block-ping not installed"
+block-ping help | grep -q "block-ping on" || fail "block-ping help"
+if block-ping bogus >/dev/null 2>&1; then fail "block-ping must reject unknown commands"; fi
+ok "block-ping installed and answers help"
 kit_version=$(tr -d '\r\n ' < VERSION)
 ver=$(awg-client version)
 echo "$ver" | grep -q "^awg-vps-kit: $kit_version " || fail "awg-client version: wrong kit version"
@@ -47,22 +52,22 @@ awg-client list | grep -q "^10.79.0.3.*bob" || fail "bob should get 10.79.0.3"
 ok "add assigns sequential addresses"
 
 out=$(awg-client show alice)
-echo "$out" | grep -q 'Address = 10.79.0.2/32' || fail "show: wrong address"
-echo "$out" | grep -q 'Endpoint = 203.0.113.10:443' || fail "show: wrong endpoint"
+grep -q 'Address = 10.79.0.2/32' <<<"$out" || fail "show: wrong address"
+grep -q 'Endpoint = 203.0.113.10:443' <<<"$out" || fail "show: wrong endpoint"
 h1=$(awk '$1=="H1"{print $3; exit}' "$DIR/awg0.conf")
-echo "$out" | grep -q "^H1 = $h1\$" || fail "show: H1 differs from server"
+grep -q "^H1 = $h1\$" <<<"$out" || fail "show: H1 differs from server"
 [ "$(echo "$out" | head -1)" = "$(printf "%60s" "" | tr " " "#")" ] || fail "show: config is not framed by separator lines"
 [ "$(grep -c "^####" "$DIR/clients/alice.conf")" = 0 ] || fail "separator leaked into the client file"
 ok "show prints a matching client config"
 
-echo "$out" | grep -q '^MTU = 1420$' || fail "show: default client MTU must be 1420"
+grep -q '^MTU = 1420$' <<<"$out" || fail "show: default client MTU must be 1420"
 grep -q '^MTU = 1280$' "$DIR/awg0.conf" || fail "server MTU must stay 1280"
 [ "$(awg-client mtu)" = 1420 ] || fail "mtu without argument must print 1420"
 if awg-client mtu 1200 >/dev/null 2>&1; then fail "mtu below 1280 must fail"; fi
 if awg-client mtu abc >/dev/null 2>&1; then fail "non-numeric mtu must fail"; fi
 awg-client mtu 1360 >/dev/null
 out=$(awg-client show alice)
-echo "$out" | grep -q '^MTU = 1360$' || fail "show must use the configured client MTU"
+grep -q '^MTU = 1360$' <<<"$out" || fail "show must use the configured client MTU"
 awg-client mtu 1420 >/dev/null
 ok "client MTU defaults to 1420, is configurable, server MTU unchanged"
 
@@ -125,11 +130,11 @@ for proto in 2.0 1.5 1.0; do
   [ "$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")" = "$s1" ] || fail "protocol $proto: S1 changed"
   [ "$(awk '/^\[Peer\]/{exit} /^(S3|S4|H[1-4]) =/' "$DIR/awg0.conf" | wc -l)" = "$([ "$proto" = 2.0 ] && echo 6 || echo 4)" ] || fail "protocol $proto: wrong server fields"
   out=$(awg-client show erin)
-  echo "$out" | grep -q "^PrivateKey = $key\$" || fail "protocol $proto: client key changed"
+  grep -q "^PrivateKey = $key\$" <<<"$out" || fail "protocol $proto: client key changed"
   case "$proto" in
-    2.0) echo "$out" | grep -Eq '^H1 = [0-9]+-[0-9]+$' || fail "2.0: client H1 not a range"; echo "$out" | grep -q '^S3 = ' || fail "2.0: client has no S3" ;;
-    1.5) echo "$out" | grep -q '^I1 = ' || fail "1.5: client has no I1" ;;
-    1.0) echo "$out" | grep -Eq '^(S3|S4|I1) ' && fail "1.0 client has newer fields" ;;
+    2.0) grep -Eq '^H1 = [0-9]+-[0-9]+$' <<<"$out" || fail "2.0: client H1 not a range"; grep -q '^S3 = ' <<<"$out" || fail "2.0: client has no S3" ;;
+    1.5) grep -q '^I1 = ' <<<"$out" || fail "1.5: client has no I1" ;;
+    1.0) grep -Eq '^(S3|S4|I1) ' <<<"$out" && fail "1.0 client has newer fields" ;;
   esac
 done
 if awg-client protocol 3.0 >/dev/null 2>&1; then fail "protocol 3.0 must be rejected"; fi

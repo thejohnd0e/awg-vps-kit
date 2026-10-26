@@ -57,6 +57,7 @@ upstream() { git ls-remote "$1" HEAD | cut -f1; }
 # scripts, docs and the recorded kit version always follow the checkout
 refresh_scripts() {
   install -m 755 "$HERE/awg-client" /usr/local/bin/awg-client
+  install -m 755 "$HERE/block-ping" /usr/local/bin/block-ping
   install -m 644 "$HERE/README.md" "$DIR/README.md"
   printf 'version=%s\ncommit=%s\n' "$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)" \
     "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$DIR/kit-version"

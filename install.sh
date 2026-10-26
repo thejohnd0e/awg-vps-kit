@@ -12,6 +12,7 @@
 #     --first-client NAME   create a client right after install       default: none
 #     --protocol 1.0|1.5|2.0  AmneziaWG protocol version                  default: 1.0 (menu 1/2/3 in a terminal)
 #     --no-service          write files only: no systemd, sysctl, firewall (for testing)
+#     --block-ping          also drop incoming ping on the uplink (runs block-ping on; see README)
 #     --allow-outdated      do not stop if this git checkout is behind upstream
 set -euo pipefail
 
@@ -33,7 +34,7 @@ if [ ! -f "$(dirname "$0")/awg-client" ]; then
   exec "$KIT/install.sh" "$@"
 fi
 
-SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; PROTOCOL=; NO_SERVICE=0; ALLOW_OUTDATED=0
+SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; PROTOCOL=; NO_SERVICE=0; ALLOW_OUTDATED=0; BLOCK_PING=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --subnet) SUBNET=$2; shift 2 ;;
@@ -45,6 +46,7 @@ while [ $# -gt 0 ]; do
     --first-client) FIRST=$2; shift 2 ;;
     --protocol) PROTOCOL=${2:-}; shift 2 ;;
     --no-service) NO_SERVICE=1; shift ;;
+    --block-ping) BLOCK_PING=1; shift ;;
     --allow-outdated) ALLOW_OUTDATED=1; shift ;;
     -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 1 ;;
@@ -166,6 +168,7 @@ log "Installing binaries to /usr/local/bin"
 apt-get install -y -qq iproute2 nftables qrencode curl >/dev/null
 install -m 755 "$BIN_DIR/amneziawg-go" "$BIN_DIR/awg" "$BIN_DIR/awg-quick" /usr/local/bin/
 install -m 755 "$HERE/awg-client" /usr/local/bin/awg-client
+install -m 755 "$HERE/block-ping" /usr/local/bin/block-ping
 
 # -------------------------------------------------------- network facts
 [ -n "$WAN_IF" ] || WAN_IF=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
@@ -297,6 +300,11 @@ AmneziaWG server is ready.
   Help:     awg-client help      (full notes: $DIR/README.md)
 If the provider has an external firewall / security group, open UDP $PORT there.
 EOF
+
+if [ "$BLOCK_PING" = 1 ] && [ "$NO_SERVICE" = 0 ]; then
+  log "Blocking incoming ping on the uplink"
+  block-ping on --wan-if "$WAN_IF"
+fi
 
 if [ -n "$FIRST" ] && [ "$NO_SERVICE" = 0 ]; then
   log "Creating first client: $FIRST"

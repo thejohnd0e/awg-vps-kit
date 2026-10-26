@@ -164,6 +164,26 @@ The obfuscation parameters must be identical on server and client; `awg-client` 
 them from `awg0.conf` (and `I1` from `protocol`). Do not change them on a server that has clients unless you
 re-issue all client configs.
 
+## Hiding the server from ping: `block-ping`
+
+Some sites measure round-trip times to the server and to the client and flag the difference
+as a tunnel (2ip.io "tunnel detection / double-sided ping"). Dropping incoming ping on the
+server removes that signal. It is **not** a guarantee against all VPN detection.
+
+```bash
+block-ping on                  # drop incoming ping on the uplink, also after reboot
+block-ping on --wan-if eth0    # choose the interface(s) yourself (comma separated)
+block-ping status              # active or not, dropped packets
+block-ping off                 # remove it completely
+./install.sh --block-ping      # do it right at install time
+```
+
+- Works with or without ufw/firewalld: it uses its own nftables table (`inet block_ping`, input
+  hook, priority -10) that runs before them and does not touch their rules. IPv4 and IPv6.
+- Only echo requests are dropped; other ICMP (errors, path MTU, neighbour discovery) stays.
+- Ping-based monitoring of the server will report it as down. It is off by default.
+- Without the kit: `curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/block-ping | bash -s -- on`
+
 ## Service and diagnostics
 
 ```bash
@@ -205,6 +225,7 @@ It asks for confirmation. Add `-s -- --keep-config` after `bash` to keep `/etc/a
 clients) for a reinstall, or `-s -- --yes` to skip the question.
 
 Removes the service, nftables table, ufw rules, sysctl file, binaries, `/etc/amnezia` and the kit clone in `/opt/awg-vps-kit`.
+It does not touch `block-ping`: run `block-ping off` first if you want the ping block removed too.
 Installed apt packages are left in place.
 
 ## When to use it
