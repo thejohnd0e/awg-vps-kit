@@ -36,6 +36,15 @@ DIR=/etc/amnezia/amneziawg
 IF=awg0
 [ "$(id -u)" = 0 ] || die "run as root"
 
+LOCK_FILE=/run/lock/awg-vps-kit.lock
+take_lock() {  # serialise every operation that reads and writes installed state
+  command -v flock >/dev/null || die "flock is required (util-linux)"
+  mkdir -p /run/lock
+  exec 9>>"$LOCK_FILE"
+  flock -w 10 9 || die "another kit operation is running (lock: $LOCK_FILE)"
+}
+take_lock
+
 # Nothing of ours on this machine: say so instead of asking to confirm a removal.
 found=0
 for f in "$DIR" /etc/amnezia /etc/systemd/system/awg-quick@.service /etc/sysctl.d/99-awg.conf \

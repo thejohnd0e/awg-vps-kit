@@ -5,6 +5,9 @@ DIR=/etc/amnezia/amneziawg
 IF=awg0
 CONF=$DIR/$IF.conf
 CL=$DIR/clients
+TXN_ROOT=$DIR/transactions
+
+die() { echo "error: $*" >&2; exit 1; }
 
 usage() {
 cat <<'EOF'
@@ -22,6 +25,8 @@ Usage:
 Notes:
   - Name: letters, digits, _ and - only (max 32 characters).
   - The next free tunnel address is picked automatically.
+  - The tunnel must be running: add and remove refuse to change files when the
+    interface is down, so a stored peer and the running one never disagree.
   - Clients are added to the running tunnel without a restart and are
     also written to /etc/amnezia/amneziawg/awg0.conf (survives reboot).
   - Client files: /etc/amnezia/amneziawg/clients/<name>.{conf,key,pub,psk}
@@ -29,6 +34,8 @@ Notes:
   - Removing a client disconnects that device immediately.
   - `protocol 2.0` rewrites the server obfuscation fields and restarts the tunnel: every client
     must then get its new config (`awg-client show <name>`), old configs stop working.
+  - If a peer operation was interrupted, /etc/amnezia/amneziawg/transactions/peer.* stays
+    behind and further changes are refused: check awg0.conf, then remove that directory.
   - Details: /etc/amnezia/amneziawg/README.md
 EOF
 }
@@ -65,6 +72,15 @@ case "$cmd" in version|-v|--version) show_version; exit 0 ;; esac
 [ -f "$CONF" ] || { echo "no $CONF" >&2; exit 1; }
 umask 077
 mkdir -p "$CL"
+mkdir -p "$TXN_ROOT"; chmod 700 "$TXN_ROOT"
+
+LOCK_FILE=/run/lock/awg-vps-kit.lock
+take_lock() {  # serialise every operation that reads and writes installed state
+  command -v flock >/dev/null || { echo "error: flock is required (util-linux)" >&2; exit 1; }
+  mkdir -p /run/lock
+  exec 9>>"$LOCK_FILE"
+  flock -w 10 9 || { echo "error: another kit operation is running (lock: $LOCK_FILE)" >&2; exit 1; }
+}
 
 valid() { [[ "$1" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "name: letters, digits, _ and - only (max 32); see: awg-client help" >&2; exit 1; }; }
 iface_val() { awk -v k="$1" '/^\[Peer\]/{exit} $1==k && $2=="="{print $3; exit}' "$CONF"; }
@@ -124,21 +140,86 @@ peer_ip() {  # tunnel address of the peer commented "# <name>"
   awk -v n="# $1" '/^\[Peer\]/{p=1;m=0;next} p&&$0==n{m=1} p&&m&&/^AllowedIPs/{sub(/\/32.*/,"",$3);print $3;exit}' "$CONF"
 }
 
+# ------------------------------------------------------------- peer transactions
+# A mutation either completes or is rolled back. The runtime change happens before the
+# files are published, so a failure never leaves a saved peer that is not running.
+TXN=; PHASE=0; KIND=; TNAME=; TPUB=; TIP=; TPSK=
+
+require_runtime() {
+  awg show "$IF" >/dev/null 2>&1 || die "tunnel $IF is not running; start it before changing clients"
+}
+pending_txn() {
+  local p
+  p=$(find "$TXN_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'peer.*' -print -quit 2>/dev/null || true)
+  [ -z "$p" ] || die "unfinished peer operation at $p; check $CONF, then remove that directory"
+}
+begin_txn() {  # begin_txn <add|remove> <name> <pub> <ip> [psk-path]
+  KIND=$1; TNAME=$2; TPUB=$3; TIP=$4; TPSK=${5:-}
+  TXN=$(mktemp -d "$TXN_ROOT/peer.XXXXXX")
+  chmod 700 "$TXN"
+  cp -p "$CONF" "$TXN/old.conf"
+  PHASE=0
+}
+end_txn() { [ -z "$TXN" ] || rm -rf "$TXN"; TXN=; PHASE=0; }
+abort_peer_txn() {  # undo whatever phase we reached; return 1 if a step could not be undone
+  [ -n "$TXN" ] || return 0
+  local ok=0 f b
+  if [ "$PHASE" -ge 1 ]; then
+    case "$KIND" in
+      add)    awg set "$IF" peer "$TPUB" remove >/dev/null 2>&1 || ok=1 ;;
+      remove) awg set "$IF" peer "$TPUB" preshared-key "$TPSK" allowed-ips "$TIP/32" >/dev/null 2>&1 || ok=1 ;;
+    esac
+  fi
+  if [ "$PHASE" -ge 2 ]; then
+    cp -p "$TXN/old.conf" "$CONF" 2>/dev/null || ok=1
+    if [ "$KIND" = add ]; then
+      rm -f "$CL/$TNAME".key "$CL/$TNAME".pub "$CL/$TNAME".psk "$CL/$TNAME".conf 2>/dev/null || ok=1
+    else
+      for f in "$TXN"/*; do
+        b=$(basename "$f")
+        case "$b" in old.conf|new.conf) continue ;; esac
+        cp -p "$f" "$CL/$b" 2>/dev/null || ok=1
+      done
+    fi
+  fi
+  if [ "$ok" = 0 ]; then rm -rf "$TXN"; TXN=; PHASE=0; return 0; fi
+  return 1
+}
+fail_txn() {  # fail_txn <message>: roll back, or keep the directory for manual recovery
+  local msg=$1 dir=$TXN
+  if abort_peer_txn; then die "$msg (changes rolled back)"; fi
+  echo "error: $msg; automatic rollback FAILED" >&2
+  echo "recovery: inspect $CONF and $dir manually, then remove $dir" >&2
+  exit 1
+}
+on_signal() {
+  if [ -n "$TXN" ] && ! abort_peer_txn; then
+    echo "warning: interrupted and rollback failed; recovery data kept in $TXN" >&2
+  fi
+  exit 130
+}
+trap on_signal INT TERM
+
 case "$cmd" in
   list)
     awk '/^\[Peer\]/{p=1;n="";next} p&&/^# /{n=substr($0,3)} p&&/^AllowedIPs/{print $3"\t"n; p=0}' "$CONF" | sort -V
     exit 0 ;;
   show)
     valid "$name"
+    take_lock
     ip=$(peer_ip "$name")
     if [ -z "$ip" ] || [ ! -f "$CL/$name.key" ]; then echo "no such client: $name (see: awg-client list)" >&2; exit 1; fi
-    gen_conf "$name" "$ip" "$(cat "$CL/$name.key")" "$(cat "$CL/$name.psk")" > "$CL/$name.conf"
+    tmp=$CL/.$name.conf.$$
+    trap 'rm -f "$tmp"' EXIT
+    gen_conf "$name" "$ip" "$(cat "$CL/$name.key")" "$(cat "$CL/$name.psk")" > "$tmp"
+    mv -f "$tmp" "$CL/$name.conf"
     print_conf "$name"
     exit 0 ;;
   protocol)
     cur=$(kv "$DIR/protocol" protocol); cur=${cur:-1.0}
     [ -n "$name" ] || { echo "$cur"; exit 0; }
     case "$name" in 1.0|1.5|2.0) ;; *) echo "protocol must be 1.0, 1.5 or 2.0" >&2; exit 1 ;; esac
+    take_lock
     [ "$name" != "$cur" ] || { echo "protocol is already $cur"; exit 0; }
     cp "$CONF" "$CONF.bak-protocol-$cur"
     protocol_fields "$name" > "$CONF.fields"
@@ -159,13 +240,26 @@ case "$cmd" in
     exit 0 ;;
   remove)
     valid "$name"
+    take_lock
+    pending_txn
     pub=$(cat "$CL/$name.pub" 2>/dev/null || cat "$DIR/$name.pub" 2>/dev/null || true)
     [ -n "$pub" ] || { echo "no such client: $name (see: awg-client list)" >&2; exit 1; }
-    cp "$CONF" "$CONF.bak-awg-client"
-    awg set $IF peer "$pub" remove || true
-    awk -v n="# $name" 'BEGIN{RS="";ORS="\n\n"} !($0 ~ /^\[Peer\]/ && index($0, "\n" n "\n"))' "$CONF" > "$CONF.tmp"
-    mv "$CONF.tmp" "$CONF"
-    rm -f "$CL/$name".* "$DIR/$name".{key,pub,psk,conf}
+    require_runtime
+    ip=$(peer_ip "$name")
+    [ -n "$ip" ] || { echo "no address for $name in $CONF; refusing to guess" >&2; exit 1; }
+    begin_txn remove "$name" "$pub" "$ip"
+    # keep a copy of every client file so a failed commit can restore it
+    for f in "$CL/$name".* "$DIR/$name".*; do
+      [ ! -e "$f" ] || cp -p "$f" "$TXN/"
+    done
+    TPSK=$TXN/$name.psk
+    awg set "$IF" peer "$pub" remove || fail_txn "cannot revoke $name on the running interface"
+    PHASE=1
+    awk -v n="# $name" 'BEGIN{RS="";ORS="\n\n"} !($0 ~ /^\[Peer\]/ && index($0, "\n" n "\n"))' "$CONF" > "$TXN/new.conf"
+    mv -f "$TXN/new.conf" "$CONF" || fail_txn "cannot write $CONF; $name is still revoked"
+    PHASE=2
+    rm -f "$CL/$name".* "$DIR/$name".{key,pub,psk,conf} || fail_txn "cannot delete files of $name"
+    end_txn
     echo "removed $name"
     exit 0 ;;
   add) ;;
@@ -173,8 +267,11 @@ case "$cmd" in
 esac
 
 valid "$name"
+take_lock
+pending_txn
 [ ! -e "$CL/$name.conf" ] || { echo "client $name already exists (use: awg-client show $name)" >&2; exit 1; }
 awk -v n="# $name" '$0==n{f=1} END{exit !f}' "$CONF" && { echo "name $name already used in $CONF" >&2; exit 1; }
+require_runtime
 
 addr=$(iface_val Address)            # e.g. 10.77.0.1/24
 base=${addr%.*}.                     # 10.77.0.
@@ -189,13 +286,29 @@ done
 ip=$base$n
 
 key=$(awg genkey); pub=$(printf %s "$key" | awg pubkey); psk=$(awg genpsk)
-printf %s "$key" > "$CL/$name.key"; printf %s "$pub" > "$CL/$name.pub"; printf %s "$psk" > "$CL/$name.psk"
+begin_txn add "$name" "$pub" "$ip"
+printf %s "$key" > "$TXN/$name.key"
+printf %s "$pub" > "$TXN/$name.pub"
+printf %s "$psk" > "$TXN/$name.psk"
+chmod 600 "$TXN/$name.key" "$TXN/$name.pub" "$TXN/$name.psk"
+TPSK=$TXN/$name.psk
 
-cp "$CONF" "$CONF.bak-awg-client"
-printf '\n[Peer]\n# %s\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s/32\n' "$name" "$pub" "$psk" "$ip" >> "$CONF"
-awg set $IF peer "$pub" preshared-key "$CL/$name.psk" allowed-ips "$ip/32"
+awg set "$IF" peer "$pub" preshared-key "$TXN/$name.psk" allowed-ips "$ip/32" \
+  || fail_txn "cannot add $name to the running interface"
+PHASE=1
 
-gen_conf "$name" "$ip" "$key" "$psk" > "$CL/$name.conf"
+gen_conf "$name" "$ip" "$key" "$psk" > "$TXN/$name.conf"
+{
+  cat "$TXN/old.conf"
+  printf '\n[Peer]\n# %s\nPublicKey = %s\nPresharedKey = %s\nAllowedIPs = %s/32\n' "$name" "$pub" "$psk" "$ip"
+} > "$TXN/new.conf"
+mv -f "$TXN/new.conf" "$CONF" || fail_txn "cannot write $CONF"
+PHASE=2
+for f in key pub psk conf; do
+  mv -f "$TXN/$name.$f" "$CL/$name.$f" || fail_txn "cannot publish $CL/$name.$f"
+done
+rm -f "$CL/.$name.conf.$$" 2>/dev/null || true
+end_txn
 
 echo "# client $name -> $ip (saved: $CL/$name.conf)"
 print_conf "$name"

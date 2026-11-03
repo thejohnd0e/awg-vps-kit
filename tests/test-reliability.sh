@@ -135,7 +135,33 @@ case_peers() {
   assert_missing "$DIR/clients/bob.conf" "failed add must not leave client files"
   grep -q '# bob' "$CONF" && fail "failed add must not change awg0.conf"
   "$ROOT/awg-client" add bob >/dev/null || fail "add must work after a clean rollback"
-  ok "peers: failed awg set rolls back"
+
+  local before; before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  AWG_STUB_SET_FAIL=1 "$ROOT/awg-client" remove bob >/dev/null 2>&1 && fail "remove must fail when awg set fails"
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed remove must not change awg0.conf"
+  "$ROOT/awg-client" list | grep -q bob || fail "failed remove must keep the client"
+
+  # SIGKILL cannot be handled: the transaction stays and blocks further changes.
+  cat > /usr/local/bin/awg <<'EOS'
+#!/bin/sh
+case "$1" in
+  genkey|pubkey|genpsk) exec /usr/local/bin/awg.real "$@" ;;
+  set) : > /tmp/awg-kill.ready; sleep 30 ;;
+  *) exit 0 ;;
+esac
+EOS
+  chmod 755 /usr/local/bin/awg
+  rm -f /tmp/awg-kill.ready
+  "$ROOT/awg-client" add killed >/dev/null 2>&1 & local kp=$!
+  local i=0; while [ ! -e /tmp/awg-kill.ready ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+  kill -9 $kp 2>/dev/null || true
+  wait $kp 2>/dev/null || true
+  pkill -f 'sleep 30' 2>/dev/null || true
+  ls -d "$DIR"/transactions/peer.* >/dev/null 2>&1 || fail "killed add left no peer transaction"
+  if "$ROOT/awg-client" add afterkill >/dev/null 2>&1; then fail "add must refuse while a peer transaction is unfinished"; fi
+  rm -rf "$DIR/transactions"
+  stub_awg
+  ok "peers: runtime guard, rollback, SIGKILL block"
 }
 
 case_protocol() {
@@ -171,13 +197,38 @@ case_lock() {
   echo "# lock"
   fresh_install
   stub_awg
-  : > /tmp/awg-lock-out
+  local hold=/run/lock/awg-vps-kit.lock
+  mkdir -p /run/lock
+
+  # A concurrent operation must make add wait for the lock, not race it.
+  flock "$hold" -c 'sleep 2' & local hp=$!
+  sleep 0.3
+  local t0 t1 elapsed
+  t0=$(date +%s%N)
+  "$ROOT/awg-client" add waited >/dev/null || fail "add must wait for the lock and then succeed"
+  t1=$(date +%s%N)
+  wait $hp
+  elapsed=$(( (t1 - t0) / 1000000 ))
+  [ "$elapsed" -ge 1500 ] || fail "add did not wait for the kit lock (${elapsed}ms)"
+
+  # A lock that is never released must end in a clear error, not a second writer.
+  flock "$hold" -c 'sleep 12' & hp=$!
+  sleep 0.3
+  local out rc
+  set +e
+  out=$("$ROOT/awg-client" add blocked 2>&1); rc=$?
+  set -e
+  wait $hp || true
+  [ "$rc" -ne 0 ] || fail "add must fail while another operation holds the lock"
+  case "$out" in *"another kit operation is running"*) ;; *) fail "lock timeout message missing (got: $out)" ;; esac
+  assert_missing "$DIR/clients/blocked.conf" "a blocked add must not write client files"
+
   "$ROOT/awg-client" add lock1 >/dev/null & local p1=$!
   "$ROOT/awg-client" add lock2 >/dev/null & local p2=$!
   wait $p1 || fail "first concurrent add failed"
   wait $p2 || fail "second concurrent add failed"
-  [ "$("$ROOT/awg-client" list | awk '{print $1}' | sort -u | wc -l)" = 2 ] || fail "concurrent adds shared an address"
-  ok "lock: concurrent adds get distinct addresses"
+  [ "$("$ROOT/awg-client" list | awk '{print $1}' | sort -u | wc -l)" = 3 ] || fail "concurrent adds shared an address"
+  ok "lock: waiting, timeout and concurrent adds"
 }
 
 if [ "$CASE" = all ]; then

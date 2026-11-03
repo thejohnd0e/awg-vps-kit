@@ -81,6 +81,16 @@ UP_TOOLS=https://github.com/amnezia-vpn/amneziawg-tools
 [ "$(id -u)" = 0 ] || die "run as root"
 [ -f "$DIR/$IF.conf" ] || die "$DIR/$IF.conf not found: nothing installed here (use install.sh)"
 
+LOCK_FILE=/run/lock/awg-vps-kit.lock
+take_lock() {  # serialise every operation that reads and writes installed state
+  command -v flock >/dev/null || die "flock is required (util-linux)"
+  mkdir -p /run/lock
+  exec 9>>"$LOCK_FILE"
+  flock -w 10 9 || die "another kit operation is running (lock: $LOCK_FILE)"
+}
+# --check only reads installed state and must not be blocked by (or block) a real update.
+[ "$CHECK" = 1 ] || take_lock
+
 installed() { awk -F= -v k="$1" '$1==k{print $2}' "$DIR/versions" 2>/dev/null || true; }
 upstream() { git ls-remote "$1" HEAD 2>/dev/null | cut -f1; }
 # scripts, docs and the recorded kit version always follow the checkout

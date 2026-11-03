@@ -92,6 +92,17 @@ IF=awg0
 
 [ "$(id -u)" = 0 ] || die "run as root"
 
+LOCK_FILE=/run/lock/awg-vps-kit.lock
+take_lock() {  # serialise every operation that reads and writes installed state
+  command -v flock >/dev/null || die "flock is required (util-linux)"
+  mkdir -p /run/lock
+  exec 9>>"$LOCK_FILE"
+  flock -w 10 9 || die "another kit operation is running (lock: $LOCK_FILE)"
+}
+# --build-only writes nothing outside its output directory and is called by update.sh,
+# which already holds the lock: taking it there would deadlock. The lock is taken below,
+# after the protocol prompt, just before the first check of installed state.
+
 # Protocol version: asked first, before the slow steps; silently 1.0 without a terminal.
 if [ -z "$PROTOCOL" ] && [ -z "$BUILD_ONLY" ] && ( : < /dev/tty ) 2>/dev/null; then
   {
@@ -111,6 +122,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 # Fail early, before the (slow) build: an existing install and a busy UDP port.
 if [ -z "$BUILD_ONLY" ]; then
+  take_lock
   if [ -f "$DIR/$IF.conf" ]; then die "$DIR/$IF.conf already exists, refusing to overwrite (remove it first if this is intended)"; fi
   if [ "$NO_SERVICE" = 0 ] && command -v ss >/dev/null; then
     busy=$(ss -H -ulnp "sport = :$PORT" 2>/dev/null || true)
@@ -341,5 +353,6 @@ EOF
 
 if [ -n "$FIRST" ] && [ "$NO_SERVICE" = 0 ]; then
   log "Creating first client: $FIRST"
+  exec 9>&-   # release the kit lock: awg-client takes it itself
   awg-client add "$FIRST"
 fi
