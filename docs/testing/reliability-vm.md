@@ -18,7 +18,7 @@ Never paste production keys, endpoints, QR codes or full configs into logs.
 | Kit commit | 621634d (`master`, before the doc-only commit) |
 | amneziawg-go / tools commits | b5928ef (2026-08-28) / ee0f0a9 (2026-08-12) |
 | Client platform | network namespace on the same VM running `awg-quick` (userspace client) |
-| Result | baseline, update, rollback, protocol changes and ufw pass; systemd gap confirmed |
+| Result | baseline, update, rollback, protocol changes, ufw, watchdog migration and recovery pass |
 
 ## Results 2026-11-03
 
@@ -39,7 +39,11 @@ the working installation. Values are from that run.
 | ufw active (non-English-safe status) | installer added `443/udp` and `route allow in on awg0 out on enp0s3`; traffic still passed |
 | `protocol 1.5` | `awg0.conf` hash and `ActiveEnterTimestamp` unchanged, client got `I1`, no restart |
 | `protocol 2.0` then `1.0` | restart, `S3/S4` + H ranges, reissued client config carried traffic |
-| Kill `amneziawg-go` | **`systemctl is-active` still `active`, `awg show` failed, interface and UDP port gone, no auto-restart**; `update.sh` refused with "active but not usable" and left binaries unchanged; manual `systemctl restart` recovered |
+| Kill `amneziawg-go` | **before the watchdog:** `systemctl is-active` still `active`, `awg show` failed, interface and UDP port gone, no auto-restart; `update.sh` refused with "active but not usable" and left binaries unchanged |
+| Watchdog migration via `update.sh --force` | `awg-watchdog.timer` installed, enabled and active on the existing installation |
+| Kill `amneziawg-go` with the watchdog | interface down right after the kill, back within ~30 s without manual action (`awg-watchdog.service` logged the restart), traffic worked again |
+| `uninstall.sh --yes` | service inactive, timer `not-found`, script and units removed |
+| Reinstall | new install created the timer (enabled) and a client; traffic worked |
 
 Not executed: Docker/iptables-nft and firewalld composition, `nft -f` twice, `systemctl restart
 nftables` with the default `flush ruleset`, a dual-stack IPv6 client, and the uninstall/keep-config

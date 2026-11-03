@@ -102,10 +102,18 @@ upstream() { git ls-remote "$1" HEAD 2>/dev/null | cut -f1; }
 # scripts, docs and the recorded kit version always follow the checkout
 refresh_scripts() {
   install -m 755 "$HERE/awg-client" /usr/local/bin/awg-client
+  install -m 755 "$HERE/awg-watchdog" /usr/local/bin/awg-watchdog
   install -m 644 "$HERE/README.md" "$DIR/README.md"
   printf 'version=%s\ncommit=%s\n' "$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)" \
     "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$DIR/kit-version"
   chmod 644 "$DIR/kit-version"
+  # Migration for servers installed before the watchdog existed: create/repair the
+  # units and start the timer. Only the units this kit owns are touched.
+  if command -v systemctl >/dev/null 2>&1; then
+    install -m 644 "$HERE/awg-watchdog.service" "$HERE/awg-watchdog.timer" /etc/systemd/system/ 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable --now awg-watchdog.timer >/dev/null 2>&1 || true
+  fi
 }
 
 changes=()
@@ -194,7 +202,9 @@ fi
 
 managed_files() {
   printf '%s\n' /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg-quick \
-    /usr/local/bin/awg-client "$DIR/versions" "$DIR/kit-version" "$DIR/README.md"
+    /usr/local/bin/awg-client /usr/local/bin/awg-watchdog \
+    /etc/systemd/system/awg-watchdog.service /etc/systemd/system/awg-watchdog.timer \
+    "$DIR/versions" "$DIR/kit-version" "$DIR/README.md"
 }
 snapshot_state() {  # snapshot_state <txn>: remember the current, self-consistent set
   local txn=$1 f
@@ -243,6 +253,9 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
     echo "warning: $BIN_DIR has no versions file; recording unknown versions"
   fi
   install -m 755 "$HERE/awg-client" "$txn/new/awg-client"
+  install -m 755 "$HERE/awg-watchdog" "$txn/new/awg-watchdog"
+  install -m 644 "$HERE/awg-watchdog.service" "$txn/new/awg-watchdog.service"
+  install -m 644 "$HERE/awg-watchdog.timer" "$txn/new/awg-watchdog.timer"
   install -m 644 "$HERE/README.md" "$txn/new/README.md"
   printf 'version=%s\ncommit=%s\n' "$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)" \
     "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$txn/new/kit-version"
@@ -257,6 +270,9 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
     install -m 644 "$txn/new/kit-version" "$DIR/kit-version" || return 1
     install -m 755 "$txn/new/awg-client" /usr/local/bin/awg-client.new \
       && mv -f /usr/local/bin/awg-client.new /usr/local/bin/awg-client || return 1
+    install -m 755 "$txn/new/awg-watchdog" /usr/local/bin/awg-watchdog || return 1
+    install -m 644 "$txn/new/awg-watchdog.service" /etc/systemd/system/awg-watchdog.service || return 1
+    install -m 644 "$txn/new/awg-watchdog.timer" /etc/systemd/system/awg-watchdog.timer || return 1
     install -m 644 "$txn/new/README.md" "$DIR/README.md" || return 1
   }
   rollback_update() {  # rollback_update <message>
@@ -296,6 +312,12 @@ if [ "$replaced" = 1 ] && [ "$restart" = 1 ]; then
 elif [ "$replaced" = 1 ]; then
   echo "New binaries are installed, runtime not verified (no restart was requested or the service is stopped)."
   echo "Apply with: systemctl restart awg-quick@$IF"
+fi
+
+if [ "$replaced" = 1 ] && command -v systemctl >/dev/null 2>&1; then
+  # Migration: servers installed before the watchdog existed get the timer here.
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable --now awg-watchdog.timer >/dev/null 2>&1 || true
 fi
 
 if [ "$replaced" = 1 ]; then

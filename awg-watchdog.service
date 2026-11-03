@@ -1,0 +1,7 @@
+[Unit]
+Description=AmneziaWG watchdog (restart a dead userspace tunnel)
+Documentation=file:/etc/amnezia/amneziawg/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/awg-watchdog

@@ -47,9 +47,10 @@ take_lock
 
 # Nothing of ours on this machine: say so instead of asking to confirm a removal.
 found=0
-for f in "$DIR" /etc/amnezia /etc/systemd/system/awg-quick@.service /etc/sysctl.d/99-awg.conf \
+for f in "$DIR" /etc/amnezia /etc/systemd/system/awg-quick@.service /etc/systemd/system/awg-watchdog.timer \
+         /etc/sysctl.d/99-awg.conf \
          /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg-quick \
-         /usr/local/bin/awg-client /opt/amneziawg /opt/awg-vps-kit; do
+         /usr/local/bin/awg-client /usr/local/bin/awg-watchdog /opt/amneziawg /opt/awg-vps-kit; do
   [ ! -e "$f" ] || { found=1; break; }
 done
 if [ "$found" = 0 ] && command -v ip >/dev/null && ip link show "$IF" >/dev/null 2>&1; then found=1; fi
@@ -71,6 +72,7 @@ port=$(awk '$1=="ListenPort"{print $3; exit}' "$DIR/$IF.conf" 2>/dev/null || tru
 wan=$(grep -o 'oifname "[^"]*" masquerade' "$DIR/nat-up.nft" 2>/dev/null | cut -d'"' -f2 || true)
 
 if command -v systemctl >/dev/null; then
+  systemctl disable --now awg-watchdog.timer 2>/dev/null || true
   systemctl disable --now "awg-quick@$IF" 2>/dev/null || true
 fi
 # no systemd (or the unit was not used): bring the interface down directly
@@ -88,9 +90,11 @@ if command -v ufw >/dev/null && LC_ALL=C ufw status 2>/dev/null | grep -q '^Stat
   [ -z "$wan" ] || ufw route delete allow in on "$IF" out on "$wan" >/dev/null 2>&1 || true
 fi
 
-rm -f /etc/systemd/system/awg-quick@.service /etc/sysctl.d/99-awg.conf
+rm -f /etc/systemd/system/awg-quick@.service /etc/systemd/system/awg-watchdog.service \
+      /etc/systemd/system/awg-watchdog.timer /etc/sysctl.d/99-awg.conf
 if command -v systemctl >/dev/null; then systemctl daemon-reload || true; fi
-rm -f /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg.real /usr/local/bin/awg-quick /usr/local/bin/awg-client
+rm -f /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg.real /usr/local/bin/awg-quick \
+      /usr/local/bin/awg-client /usr/local/bin/awg-watchdog
 rm -rf /opt/amneziawg /opt/awg-vps-kit
 if [ "$KEEP" = 0 ]; then rm -rf /etc/amnezia; fi
 

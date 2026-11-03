@@ -91,7 +91,10 @@ What the installer does:
 3. generates server keys and random obfuscation parameters (`S1`, `S2`, `H1`-`H4`, plus `S3/S4` for 2.0; `Jc/Jmin/Jmax` fixed at 5/40/900);
 4. writes `/etc/amnezia/amneziawg/awg0.conf` and the NAT rules (nftables table `awg_nat`, removed when the service stops);
 5. enables `net.ipv4.ip_forward`, and if `ufw` is active opens the UDP port and adds a forwarding rule;
-6. creates and starts the systemd service `awg-quick@awg0`.
+6. creates and starts the systemd service `awg-quick@awg0`;
+7. enables `awg-watchdog.timer`: every 30 s it checks that `awg0` still exists while the
+   unit reports `active`, and restarts the tunnel if `amneziawg-go` died (it skips while a
+   kit operation holds the lock).
 
 It refuses to run if `awg0.conf` already exists. If the provider has a cloud firewall /
 security group, open UDP 443 there yourself.
@@ -106,6 +109,7 @@ security group, open UDP 443 there yourself.
 | Clients | `clients/<name>.{conf,key,pub,psk}` |
 | NAT rules | `nat-up.nft` |
 | Service | `awg-quick@awg0` (unit in `/etc/systemd/system/awg-quick@.service`) |
+| Watchdog | `awg-watchdog.timer` / `.service` (script `/usr/local/bin/awg-watchdog`) |
 | Binaries | `/usr/local/bin/{amneziawg-go,awg,awg-quick,awg-client}` |
 
 ## Managing clients: `awg-client`
@@ -161,7 +165,15 @@ systemctl status awg-quick@awg0
 awg show awg0                                    # peers, last handshake, traffic
 journalctl -u awg-quick@awg0 -n 30 --no-pager    # if it does not start
 systemctl restart awg-quick@awg0                 # drops all clients for a few seconds
+systemctl status awg-watchdog.timer              # watchdog is active
+journalctl -u awg-watchdog.service -n 20         # restarts the watchdog performed
 ```
+
+The unit is `oneshot`: if `amneziawg-go` dies, systemd still reports `active` while the
+interface and the UDP port are gone. `awg-watchdog.timer` runs every 30 s and restarts the
+unit in that case (logged in `awg-watchdog.service`); it does not restart on its own while
+`add`/`remove`/`protocol`/`update` holds the kit lock. To turn it off:
+`systemctl disable --now awg-watchdog.timer`.
 
 A `latest handshake` older than a couple of minutes for an enabled client means the
 tunnel does not work: UDP port blocked (provider firewall / ISP), wrong keys, or
@@ -190,6 +202,7 @@ Servers installed before `update.sh` existed have no recorded
 versions and are reported as "unknown", so the first update rebuilds. Options go after
 `bash -s --`: `--check` (report only; exit code 0 = latest installed, 10 = update available;
 does not pull the kit or change installed files), `--force`, `--bin-dir DIR`, `--no-restart`.
+An update also installs and enables `awg-watchdog.timer` on servers created by an older kit.
 
 ## Uninstall
 
@@ -200,7 +213,7 @@ curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/unins
 It asks for confirmation. Add `-s -- --keep-config` after `bash` to keep `/etc/amnezia` (keys,
 clients) for a reinstall, or `-s -- --yes` to skip the question.
 
-Removes the service, nftables table, ufw rules, sysctl file, binaries, `/etc/amnezia` and the kit clone in `/opt/awg-vps-kit`.
+Removes the service, watchdog timer, nftables table, ufw rules, sysctl file, binaries, `/etc/amnezia` and the kit clone in `/opt/awg-vps-kit`.
 Installed apt packages are left in place. `--keep-config` keeps `/etc/amnezia`, including
 `clients/`, `protocol` and any unfinished `transactions/` directory; a later reinstall still
 refuses to overwrite an existing `awg0.conf`, so restore it deliberately rather than re-running

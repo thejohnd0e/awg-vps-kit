@@ -347,6 +347,15 @@ EOF
   systemctl is-active "awg-quick@$IF" >/dev/null || { journalctl -u "awg-quick@$IF" -n 30 --no-pager; die "service did not start (config left in $DIR: remove it before re-running)"; }
   awg show "$IF" | sed -n '1,5p'
 
+  # The unit is oneshot: if amneziawg-go dies, systemd still reports "active" and the
+  # tunnel is gone. The timer restarts it within ~30 s (and skips while a kit operation
+  # holds the lock).
+  log "Enabling the watchdog timer (awg-watchdog.timer)"
+  install -m 755 "$HERE/awg-watchdog" /usr/local/bin/awg-watchdog
+  install -m 644 "$HERE/awg-watchdog.service" "$HERE/awg-watchdog.timer" /etc/systemd/system/
+  systemctl daemon-reload
+  systemctl enable --now awg-watchdog.timer >/dev/null
+
   cat <<EOF
 
 AmneziaWG server is ready.

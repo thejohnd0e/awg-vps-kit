@@ -1,0 +1,30 @@
+#!/bin/bash
+# awg-watchdog: restart awg-quick@awg0 when the userspace daemon died but the
+# oneshot unit still reports "active". Run from awg-watchdog.timer every 30 s.
+set -euo pipefail
+
+IF=${AWG_IF:-awg0}
+UNIT="awg-quick@$IF"
+DIR=/etc/amnezia/amneziawg
+LOCK=/run/lock/awg-vps-kit.lock
+
+command -v systemctl >/dev/null 2>&1 || exit 0
+[ -f "$DIR/$IF.conf" ] || exit 0
+systemctl is-active --quiet "$UNIT" || exit 0
+
+# Never race add/remove/protocol/update/uninstall: those hold the kit lock.
+if command -v flock >/dev/null 2>&1; then
+  mkdir -p /run/lock
+  exec 9>>"$LOCK"
+  flock -n 9 || exit 0
+fi
+
+# amneziawg-go owns the interface; if it died, both the device and the awg query
+# are gone even though the oneshot unit is still "active".
+if awg show "$IF" >/dev/null 2>&1 && ip link show "$IF" >/dev/null 2>&1; then
+  exit 0
+fi
+
+echo "awg-watchdog: $IF is gone while $UNIT reports active; restarting" >&2
+systemctl restart "$UNIT" || echo "awg-watchdog: restart of $UNIT failed" >&2
+exit 0

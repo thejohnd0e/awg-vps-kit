@@ -7,7 +7,7 @@
 #   AWG_TEST_ALLOW_DESTRUCTIVE=1 tests/test-reliability.sh BIN_DIR [CASE]
 #
 # BIN_DIR holds amneziawg-go, awg, awg-quick built by `install.sh --build-only`.
-# CASE: cli | peers | protocol | update | lock | bootstrap | cleanup | all
+# CASE: cli | peers | protocol | update | lock | bootstrap | cleanup | watchdog | all
 # shellcheck disable=SC2119  # fresh_install passes extra options only when a case needs them
 set -euo pipefail
 
@@ -356,13 +356,57 @@ case_lock() {
   ok "lock: waiting, timeout and concurrent adds"
 }
 
+case_watchdog() {
+  echo "# watchdog"
+  [ -x "$ROOT/awg-watchdog" ] || fail "awg-watchdog script is missing"
+  mkdir -p "$DIR"; : > "$CONF"   # the watchdog ignores hosts where the kit is not installed
+  local tmp; tmp=$(mktemp -d /tmp/awg-wd.XXXXXX)
+  : > /tmp/awg-wd-restarts
+  mkdir -p "$tmp/bin"
+  cat > "$tmp/bin/systemctl" <<'EOS'
+#!/bin/sh
+case "$1" in
+  is-active) [ "${WD_ACTIVE:-1}" = 1 ]; exit $? ;;
+  restart) printf '%s\n' "$*" >> /tmp/awg-wd-restarts; exit 0 ;;
+  *) exit 0 ;;
+esac
+EOS
+  cat > "$tmp/bin/awg" <<'EOS'
+#!/bin/sh
+[ "${WD_SHOW_FAIL:-0}" = 1 ] && exit 1
+exit 0
+EOS
+  cat > "$tmp/bin/ip" <<'EOS'
+#!/bin/sh
+[ "${WD_LINK_FAIL:-0}" = 1 ] && exit 1
+exit 0
+EOS
+  chmod 755 "$tmp/bin/systemctl" "$tmp/bin/awg" "$tmp/bin/ip"
+
+  PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog" || fail "watchdog must exit 0 on a healthy tunnel"
+  [ ! -s /tmp/awg-wd-restarts ] || fail "watchdog restarted a healthy tunnel"
+
+  WD_SHOW_FAIL=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog" || fail "watchdog must exit 0 after a restart attempt"
+  grep -qx 'restart awg-quick@awg0' /tmp/awg-wd-restarts || fail "watchdog did not restart a dead tunnel"
+  : > /tmp/awg-wd-restarts
+
+  WD_LINK_FAIL=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog" || fail "watchdog must exit 0 after a restart attempt"
+  grep -qx 'restart awg-quick@awg0' /tmp/awg-wd-restarts || fail "watchdog ignored a missing interface"
+  : > /tmp/awg-wd-restarts
+
+  WD_ACTIVE=0 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
+  [ ! -s /tmp/awg-wd-restarts ] || fail "watchdog restarted an inactive unit"
+  rm -rf "$tmp"; rm -f "$CONF"
+  ok "watchdog: healthy, dead daemon, missing interface, inactive unit"
+}
+
 if [ "$CASE" = all ]; then
-  for c in cli bootstrap cleanup lock peers protocol update; do
+  for c in cli bootstrap cleanup lock peers protocol update watchdog; do
     "case_$c"
   done
 else
   case "$CASE" in
-    cli|bootstrap|cleanup|lock|peers|protocol|update) "case_$CASE" ;;
+    cli|bootstrap|cleanup|lock|peers|protocol|update|watchdog) "case_$CASE" ;;
     *) echo "unknown case: $CASE" >&2; exit 2 ;;
   esac
 fi
