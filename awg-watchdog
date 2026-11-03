@@ -25,7 +25,8 @@ fi
 healthy=1
 awg show "$IF" >/dev/null 2>&1 || healthy=0
 ip link show "$IF" >/dev/null 2>&1 || healthy=0
-if command -v nft >/dev/null 2>&1 && ! nft list table ip awg_nat >/dev/null 2>&1; then
+if [ -f "$DIR/nat-up.nft" ] && command -v nft >/dev/null 2>&1 \
+   && ! nft list table ip awg_nat >/dev/null 2>&1; then
   healthy=0
 fi
 [ "$healthy" = 1 ] && exit 0

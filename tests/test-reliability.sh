@@ -422,15 +422,22 @@ EOS
   grep -qx 'restart awg-quick@awg0' /tmp/awg-wd-restarts || fail "watchdog ignored a missing interface"
   : > /tmp/awg-wd-restarts
 
-  # NAT can disappear without the interface dying (systemctl restart nftables).
+  # NAT can disappear without the interface dying (systemctl restart nftables),
+  # but only installs that use the kit's nft table need that check.
+  : > "$DIR/nat-up.nft"
   WD_NFT_FAIL=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog" || fail "watchdog must exit 0 after a restart attempt"
   grep -qx 'restart awg-quick@awg0' /tmp/awg-wd-restarts || fail "watchdog ignored a missing NAT table"
   : > /tmp/awg-wd-restarts
 
+  # Older installs (iptables NAT, no nat-up.nft) must not be restarted every 30 s.
+  rm -f "$DIR/nat-up.nft"
+  WD_NFT_FAIL=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog" || fail "watchdog must exit 0 without an nft NAT table"
+  [ ! -s /tmp/awg-wd-restarts ] || fail "watchdog restarted an iptables-NAT install"
+
   WD_ACTIVE=0 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
   [ ! -s /tmp/awg-wd-restarts ] || fail "watchdog restarted an inactive unit"
   rm -rf "$tmp"; rm -f "$CONF"
-  ok "watchdog: healthy, dead daemon, missing interface, missing NAT, inactive unit"
+  ok "watchdog: healthy, dead daemon, missing interface, NAT only for nft installs, inactive unit"
 }
 
 if [ "$CASE" = all ]; then
