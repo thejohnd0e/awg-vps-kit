@@ -214,12 +214,30 @@ case_update() {
   echo "# update"
   fresh_install
   stub_awg
+  stub_systemctl
   "$ROOT/awg-client" add carol >/dev/null
-  local before; before=$(sha256sum "$CONF" | cut -d' ' -f1)
-  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  local before out; before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  out=$("$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart)
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "update must not touch awg0.conf"
   "$ROOT/awg-client" list | grep -q carol || fail "clients lost after update"
-  ok "update: binaries installed, config untouched"
+  echo "$out" | grep -q 'runtime not verified' || fail "--no-restart must say the runtime was not verified"
+
+  # is-active alone is not health: a broken interface must stop the update before replacing files.
+  local hash; hash=$(sha256sum /usr/local/bin/awg | cut -d' ' -f1)
+  if SYSTEMCTL_ACTIVE=1 AWG_STUB_SHOW_FAIL=1 "$ROOT/update.sh" --force --bin-dir "$BIN" >/dev/null 2>&1; then
+    fail "update must refuse an active service whose interface is unusable"
+  fi
+  [ "$(sha256sum /usr/local/bin/awg | cut -d' ' -f1)" = "$hash" ] || fail "refused update must not replace binaries"
+
+  # A failed restart must restore the previous binaries and metadata.
+  local vhash; vhash=$(sha256sum "$DIR/versions" | cut -d' ' -f1)
+  if SYSTEMCTL_ACTIVE=1 SYSTEMCTL_RESTART_FAIL=1 "$ROOT/update.sh" --force --bin-dir "$BIN" >/dev/null 2>&1; then
+    fail "a failed restart must fail the update"
+  fi
+  [ "$(sha256sum /usr/local/bin/awg | cut -d' ' -f1)" = "$hash" ] || fail "failed update must restore the previous binaries"
+  [ "$(sha256sum "$DIR/versions" | cut -d' ' -f1)" = "$vhash" ] || fail "failed update must restore versions"
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed update must not touch awg0.conf"
+  ok "update: binaries, health gate, rollback, no-restart wording"
 }
 
 case_lock() {

@@ -31,3 +31,5 @@ jobs:
         run: bash install.sh --build-only /opt/awg-bin
       - name: Install and client management
         run: bash tests/test-install.sh /opt/awg-bin
+      - name: Reliability checks
+        run: AWG_TEST_ALLOW_DESTRUCTIVE=1 bash tests/test-reliability.sh /opt/awg-bin all

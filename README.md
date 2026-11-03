@@ -179,8 +179,14 @@ It compares the installed versions (kit `VERSION`, `amneziawg-go` and `amneziawg
 commits; see `awg-client version`) with the latest ones and prints either
 `Update available: ... ; updating.` or `Latest version is installed (...)`.
 The server config, keys and clients are not touched. A binary update restarts the
-service (clients reconnect in a few seconds); the previous binaries are kept in
-`/opt/amneziawg/prev`. Servers installed before `update.sh` existed have no recorded
+service (clients reconnect in a few seconds) only when the running interface is usable
+(`systemctl is-active` plus `awg show`); otherwise it stops before replacing anything.
+If the restart or the check afterwards fails, the previous binaries, `versions`,
+`kit-version`, `awg-client` and README are restored and the old version is started again;
+the failed attempt is reported with exit 1. The previous, matching set is kept in
+`/opt/amneziawg/prev` after a successful update. With `--no-restart` (or when the service
+is stopped) the files are installed but the runtime is not verified, and the script says so.
+Servers installed before `update.sh` existed have no recorded
 versions and are reported as "unknown", so the first update rebuilds. Options go after
 `bash -s --`: `--check` (report only; exit code 0 = latest installed, 10 = update available;
 does not pull the kit or change installed files), `--force`, `--bin-dir DIR`, `--no-restart`.
@@ -195,7 +201,10 @@ It asks for confirmation. Add `-s -- --keep-config` after `bash` to keep `/etc/a
 clients) for a reinstall, or `-s -- --yes` to skip the question.
 
 Removes the service, nftables table, ufw rules, sysctl file, binaries, `/etc/amnezia` and the kit clone in `/opt/awg-vps-kit`.
-Installed apt packages are left in place.
+Installed apt packages are left in place. `--keep-config` keeps `/etc/amnezia`, including
+`clients/`, `protocol` and any unfinished `transactions/` directory; a later reinstall still
+refuses to overwrite an existing `awg0.conf`, so restore it deliberately rather than re-running
+the installer over it.
 
 ## When to use it
 

@@ -168,6 +168,46 @@ if [ "$behind" -gt 0 ]; then
 fi
 
 replaced=0
+runtime_healthy() {  # local liveness, not proof that traffic flows
+  command -v systemctl >/dev/null || return 1
+  systemctl is-active --quiet "awg-quick@$IF" || return 1
+  awg show "$IF" >/dev/null 2>&1
+}
+
+restart=0
+if [ "$NO_RESTART" = 0 ] && command -v systemctl >/dev/null \
+   && systemctl is-active --quiet "awg-quick@$IF"; then
+  restart=1
+fi
+# is-active is not health: replacing binaries under a broken interface hides the failure
+# until the restart, when the rollback would have to guess which side broke it.
+if [ "$restart" = 1 ] && ! runtime_healthy; then
+  die "awg-quick@$IF is active but not usable (awg show $IF failed); fix it first, or pass --no-restart"
+fi
+
+managed_files() {
+  printf '%s\n' /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg-quick \
+    /usr/local/bin/awg-client "$DIR/versions" "$DIR/kit-version" "$DIR/README.md"
+}
+snapshot_state() {  # snapshot_state <txn>: remember the current, self-consistent set
+  local txn=$1 f
+  mkdir -p "$txn/files"
+  : > "$txn/manifest"
+  while IFS= read -r f; do
+    [ ! -e "$f" ] || { cp -p "$f" "$txn/files/$(basename "$f")" && printf '%s\n' "$f" >> "$txn/manifest"; }
+  done < <(managed_files)
+}
+restore_state() {  # restore_state <txn>: files that did not exist before are removed again
+  local txn=$1 f failed=0
+  while IFS= read -r f; do
+    cp -p "$txn/files/$(basename "$f")" "$f" || failed=1
+  done < "$txn/manifest"
+  while IFS= read -r f; do
+    grep -qxF "$f" "$txn/manifest" || rm -f "$f" || failed=1
+  done < <(managed_files)
+  return "$failed"
+}
+
 if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
   if [ -z "$BIN_DIR" ]; then
     BIN_DIR=$(mktemp -d /var/tmp/awg-update.XXXXXX)
@@ -177,27 +217,79 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
   fi
   for f in amneziawg-go awg awg-quick; do [ -x "$BIN_DIR/$f" ] || die "missing $BIN_DIR/$f"; done
 
-  log "Installing binaries (previous ones saved to /opt/amneziawg/prev)"
-  mkdir -p /opt/amneziawg/prev
-  for f in amneziawg-go awg awg-quick; do
-    [ ! -f "/usr/local/bin/$f" ] || cp -p "/usr/local/bin/$f" "/opt/amneziawg/prev/$f"
-    install -m 755 "$BIN_DIR/$f" "/usr/local/bin/$f.new"
-    mv -f "/usr/local/bin/$f.new" "/usr/local/bin/$f"     # safe while the old binary is running
-  done
-  [ ! -f "$BIN_DIR/versions" ] || install -m 644 "$BIN_DIR/versions" "$DIR/versions"
+  txn=$(mktemp -d "$DIR/transactions/update.XXXXXX"); chmod 700 "$txn"
+  snapshot_state "$txn"
+  mkdir -p "$txn/new"
+  install -m 755 "$BIN_DIR/amneziawg-go" "$txn/new/amneziawg-go"
+  install -m 755 "$BIN_DIR/awg" "$txn/new/awg"
+  install -m 755 "$BIN_DIR/awg-quick" "$txn/new/awg-quick"
+  if [ -f "$BIN_DIR/versions" ]; then
+    install -m 644 "$BIN_DIR/versions" "$txn/new/versions"
+  else
+    # Do not keep the old commits next to new binaries as if they described them.
+    printf 'amneziawg-go=unknown\namneziawg-tools=unknown\n' > "$txn/new/versions"
+    echo "warning: $BIN_DIR has no versions file; recording unknown versions"
+  fi
+  install -m 755 "$HERE/awg-client" "$txn/new/awg-client"
+  install -m 644 "$HERE/README.md" "$txn/new/README.md"
+  printf 'version=%s\ncommit=%s\n' "$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)" \
+    "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$txn/new/kit-version"
+
+  replace_all() {
+    local f
+    for f in amneziawg-go awg awg-quick; do
+      install -m 755 "$txn/new/$f" "/usr/local/bin/$f.new" \
+        && mv -f "/usr/local/bin/$f.new" "/usr/local/bin/$f" || return 1
+    done
+    install -m 644 "$txn/new/versions" "$DIR/versions" || return 1
+    install -m 644 "$txn/new/kit-version" "$DIR/kit-version" || return 1
+    install -m 755 "$txn/new/awg-client" /usr/local/bin/awg-client.new \
+      && mv -f /usr/local/bin/awg-client.new /usr/local/bin/awg-client || return 1
+    install -m 644 "$txn/new/README.md" "$DIR/README.md" || return 1
+  }
+  rollback_update() {  # rollback_update <message>
+    local msg=$1
+    if ! restore_state "$txn"; then
+      echo "error: $msg; RESTORE FAILED (transaction kept in $txn)" >&2
+      exit 1
+    fi
+    if [ "$restart" = 1 ]; then
+      if systemctl restart "awg-quick@$IF"; then
+        sleep 2
+        if runtime_healthy; then rm -rf "$txn"; die "$msg (previous version restored and running)"; fi
+      fi
+      echo "error: $msg; previous files restored but the service did not start" >&2
+      echo "recovery: transaction kept in $txn" >&2
+      exit 1
+    fi
+    rm -rf "$txn"
+    die "$msg (previous files restored)"
+  }
+
+  log "Installing binaries (previous set is kept in $txn until the update succeeds)"
+  replace_all || rollback_update "cannot replace installed files"
   replaced=1
 fi
 
-refresh_scripts
+if [ "$replaced" = 0 ]; then
+  refresh_scripts
+fi
 
-if [ "$replaced" = 1 ] && [ "$NO_RESTART" = 0 ] && command -v systemctl >/dev/null \
-   && systemctl is-active --quiet "awg-quick@$IF"; then
+if [ "$replaced" = 1 ] && [ "$restart" = 1 ]; then
   log "Restarting awg-quick@$IF (clients reconnect in a few seconds)"
-  systemctl restart "awg-quick@$IF" || true
+  systemctl restart "awg-quick@$IF" || rollback_update "the service did not restart"
   sleep 2
-  systemctl is-active --quiet "awg-quick@$IF" || { journalctl -u "awg-quick@$IF" -n 30 --no-pager; die "service did not start; previous binaries are in /opt/amneziawg/prev"; }
+  runtime_healthy || { journalctl -u "awg-quick@$IF" -n 30 --no-pager; rollback_update "the tunnel is not usable after the restart"; }
   awg show "$IF" | head -3
 elif [ "$replaced" = 1 ]; then
-  echo "New binaries apply after: systemctl restart awg-quick@$IF"
+  echo "New binaries are installed, runtime not verified (no restart was requested or the service is stopped)."
+  echo "Apply with: systemctl restart awg-quick@$IF"
+fi
+
+if [ "$replaced" = 1 ]; then
+  # keep the previous, self-consistent set (binaries and the metadata that describes them)
+  mkdir -p /opt/amneziawg/prev
+  cp -p "$txn/files/"* /opt/amneziawg/prev/ 2>/dev/null || true
+  rm -rf "$txn"
 fi
 echo "Done."
