@@ -52,8 +52,9 @@ the working installation. Values are from that run.
 | Reinstall after removal | new install with client `vmclient3`, timer active, traffic worked |
 | IPv6 | the VM has only a link-local address on `enp0s3` and no IPv6 default route, so a dual-stack leak test was not possible here |
 
-Not executed: a dual-stack IPv6 client (needs an IPv6-capable uplink) and firewalld/Docker
-support work (both are findings, not fixes).
+Not executed: a dual-stack IPv6 client (the VM has no global IPv6). Decision (2026-11-03): firewalld
+support is out of scope and documented as unsupported; Docker works as shown above; the tunnel stays
+IPv4-only with the IPv6 leak documented in README.
 
 
 ## Baseline

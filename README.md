@@ -27,6 +27,18 @@ Minimum VPS instance:
 
 Disk space and traffic needs are not measured: TBD.
 
+**Not supported (on purpose):**
+
+- **firewalld.** The installer integrates only with `ufw` (port and route rules) and its own
+  nftables table `awg_nat`. With firewalld active the tunnel is blocked: verified on Debian 13
+  with the default `public` zone, even `ping 10.99.0.1` fails. Open UDP 443 and allow forwarding
+  yourself, or disable firewalld and use ufw. Docker/iptables-nft works (its `FORWARD` policy
+  does not override the kit's forward chain).
+- **IPv6.** The tunnel is IPv4-only. Generated client profiles contain `AllowedIPs = 0.0.0.0/0`,
+  so a client with native IPv6 sends that traffic **outside the VPN** (a leak), and the server
+  does no IPv6 filtering. If your provider or mobile network hands out IPv6, treat it as
+  unprotected.
+
 ## Install on a new server
 
 See "Requirements" above. The binaries are built
@@ -90,7 +102,8 @@ What the installer does:
 2. installs `qrencode`, `nftables`, `iproute2`;
 3. generates server keys and random obfuscation parameters (`S1`, `S2`, `H1`-`H4`, plus `S3/S4` for 2.0; `Jc/Jmin/Jmax` fixed at 5/40/900);
 4. writes `/etc/amnezia/amneziawg/awg0.conf` and the NAT rules (nftables table `awg_nat`, removed when the service stops);
-5. enables `net.ipv4.ip_forward`, and if `ufw` is active opens the UDP port and adds a forwarding rule;
+5. enables `net.ipv4.ip_forward`, and if `ufw` is active opens the UDP port and adds a forwarding
+   rule (firewalld is not supported, see "Not supported" above);
 6. creates and starts the systemd service `awg-quick@awg0`;
 7. enables `awg-watchdog.timer`: every 30 s it checks that `awg0` still exists while the
    unit reports `active`, and restarts the tunnel if `amneziawg-go` died (it skips while a
