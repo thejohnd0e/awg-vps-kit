@@ -32,8 +32,9 @@ Disk space and traffic needs are not measured: TBD.
 - **firewalld.** The installer integrates only with `ufw` (port and route rules) and its own
   nftables table `awg_nat`. With firewalld active the tunnel is blocked: verified on Debian 13
   with the default `public` zone, even `ping 10.99.0.1` fails. Open UDP 443 and allow forwarding
-  yourself, or disable firewalld and use ufw. Docker/iptables-nft works (its `FORWARD` policy
-  does not override the kit's forward chain).
+  yourself, or disable firewalld and use ufw. `install.sh` prints a warning when `firewall-cmd`
+  reports `running`. Docker/iptables-nft works (its `FORWARD` policy does not override the kit's
+  forward chain).
 - **IPv6.** The tunnel is IPv4-only. Generated client profiles contain `AllowedIPs = 0.0.0.0/0`,
   so a client with native IPv6 sends that traffic **outside the VPN** (a leak), and the server
   does no IPv6 filtering. If your provider or mobile network hands out IPv6, treat it as

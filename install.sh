@@ -305,6 +305,12 @@ chmod 600 "$DIR/$IF.conf"
 [ "$PROTOCOL" != 2.0 ] || printf 'S3 = %s\nS4 = %s\n' "$S3" "$S4" >> "$DIR/$IF.conf"
 install -m 644 "$HERE/README.md" "$DIR/README.md"
 
+# firewalld is not supported (see README): say so instead of leaving a tunnel that looks
+# installed but is blocked by its default zone.
+if command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/null || true)" = running ]; then
+  echo "warning: firewalld is running but not supported by this kit; open UDP $PORT and allow forwarding from $IF yourself, or use ufw (see README)" >&2
+fi
+
 if [ "$NO_SERVICE" = 1 ]; then
   log "Files written (--no-service): $DIR"
   [ -z "$FIRST" ] || echo "warning: --first-client is ignored with --no-service" >&2

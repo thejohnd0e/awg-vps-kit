@@ -22,6 +22,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # install.sh installs iproute2/nftables/qrencode/curl with apt
 apt-get update -qq
 
+# shellcheck source=tests/helpers/reliability.sh
 . "$ROOT/tests/helpers/reliability.sh"
 BIN=$(cd "$BIN" && pwd)
 
@@ -85,6 +86,18 @@ case_cli() {
   rm -rf "$DIR"
   "$ROOT/install.sh" --no-service --port 1 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
   grep -q '^ListenPort = 1$' "$CONF" || fail "port 1 was not accepted"
+
+  # firewalld is not supported: the installer must say so instead of leaving a blocked tunnel.
+  rm -rf "$DIR"
+  mkdir -p /tmp/awg-fw-bin
+  printf '#!/bin/sh\necho running\n' > /tmp/awg-fw-bin/firewall-cmd
+  chmod 755 /tmp/awg-fw-bin/firewall-cmd
+  out=$(PATH=/tmp/awg-fw-bin:$PATH "$ROOT/install.sh" --no-service \
+    --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" 2>&1)
+  case "$out" in
+    *"firewalld is running but not supported"*) ;;
+    *) fail "install.sh must warn about an active firewalld" ;;
+  esac
   ok "cli: values, ranges, help, IPv6 endpoint and file modes"
 }
 
