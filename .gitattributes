@@ -4,4 +4,5 @@ awg-client text eol=lf
 awg-watchdog text eol=lf
 awg-watchdog.service text eol=lf
 awg-watchdog.timer text eol=lf
+block-ping text eol=lf
 *.md text eol=lf

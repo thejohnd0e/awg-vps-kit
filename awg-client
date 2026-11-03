@@ -20,6 +20,7 @@ Usage:
   awg-client remove <name>   remove a client (takes effect immediately)
   awg-client version         show installed kit and amneziawg versions
   awg-client protocol [1.0|1.5|2.0]   show or change the protocol version of this server
+  awg-client mtu [1280-1500]          show or set the MTU written into client configs (default 1420)
   awg-client help            this help
 
 Notes:
@@ -36,6 +37,8 @@ Notes:
     must then get its new config (`awg-client show <name>`), old configs stop working.
   - Switching only between 1.0 and 1.5 keeps the server fields: no restart, existing clients keep
     working; new configs get the I1-I5 fields for 1.5.
+  - `mtu N` only changes the MTU line of client configs (server awg0 is not touched, no restart).
+    Devices that are already set up keep their old MTU until they import `awg-client show <name>` again.
   - If a peer operation was interrupted, /etc/amnezia/amneziawg/transactions/peer.* stays
     behind and further changes are refused: check awg0.conf, then remove that directory.
   - Details: /etc/amnezia/amneziawg/README.md
@@ -85,6 +88,9 @@ require_conf() { [ -f "$CONF" ] || { echo "no $CONF" >&2; exit 1; }; }
 ensure_dirs() { mkdir -p "$CL" "$TXN_ROOT"; chmod 700 "$TXN_ROOT"; }
 
 valid() { [[ "$1" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "name: letters, digits, _ and - only (max 32); see: awg-client help" >&2; exit 1; }; }
+client_mtu() {  # MTU for client configs: $DIR/client-mtu, default 1420 (1500 minus 80 bytes of tunnel overhead)
+  local m; m=$(cat "$DIR/client-mtu" 2>/dev/null || true); echo "${m:-1420}"
+}
 iface_val() { awk -v k="$1" '/^\[Peer\]/{exit} $1==k && $2=="="{print $3; exit}' "$CONF"; }
 qr() { if command -v qrencode >/dev/null; then echo; qrencode -t ansiutf8 < "$1"; fi; }
 # config between separator lines (only on screen, not in the file), then the QR code
@@ -104,7 +110,7 @@ gen_conf_raw() {  # name ip key psk
 PrivateKey = $key
 Address = $ip/32
 DNS = 1.1.1.1
-MTU = $(iface_val MTU)
+MTU = $(client_mtu)
 Jc = $(iface_val Jc)
 Jmin = $(iface_val Jmin)
 Jmax = $(iface_val Jmax)
@@ -319,6 +325,18 @@ case "$cmd" in
     fi
     echo "New configs: awg-client show <name> for:"
     list_names | sed 's/^/  /'
+    exit 0 ;;
+  mtu)
+    [ -n "$name" ] || { client_mtu; exit 0; }
+    if ! [[ "$name" =~ ^[0-9]+$ ]] || [ "$name" -lt 1280 ] || [ "$name" -gt 1500 ]; then
+      echo "mtu must be a number from 1280 to 1500" >&2; exit 1
+    fi
+    take_lock
+    require_conf
+    ensure_dirs
+    printf '%s\n' "$name" > "$DIR/client-mtu.new" && mv -f "$DIR/client-mtu.new" "$DIR/client-mtu"
+    chmod 644 "$DIR/client-mtu"
+    echo "client MTU = $name (new and re-shown configs; devices must re-import: awg-client show <name>)"
     exit 0 ;;
   remove)
     valid "$name"

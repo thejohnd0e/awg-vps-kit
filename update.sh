@@ -104,6 +104,7 @@ refresh_scripts() {
   apply_migrations
   install -m 755 "$HERE/awg-client" /usr/local/bin/awg-client
   install -m 755 "$HERE/awg-watchdog" /usr/local/bin/awg-watchdog
+  install -m 755 "$HERE/block-ping" /usr/local/bin/block-ping
   install -m 644 "$HERE/README.md" "$DIR/README.md"
   printf 'version=%s\ncommit=%s\n' "$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)" \
     "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$DIR/kit-version"
@@ -220,7 +221,7 @@ fi
 
 managed_files() {
   printf '%s\n' /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg-quick \
-    /usr/local/bin/awg-client /usr/local/bin/awg-watchdog \
+    /usr/local/bin/awg-client /usr/local/bin/awg-watchdog /usr/local/bin/block-ping \
     /etc/systemd/system/awg-watchdog.service /etc/systemd/system/awg-watchdog.timer \
     "$DIR/versions" "$DIR/kit-version" "$DIR/README.md"
 }
@@ -272,6 +273,7 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
   fi
   install -m 755 "$HERE/awg-client" "$txn/new/awg-client"
   install -m 755 "$HERE/awg-watchdog" "$txn/new/awg-watchdog"
+  install -m 755 "$HERE/block-ping" "$txn/new/block-ping"
   install -m 644 "$HERE/awg-watchdog.service" "$txn/new/awg-watchdog.service"
   install -m 644 "$HERE/awg-watchdog.timer" "$txn/new/awg-watchdog.timer"
   install -m 644 "$HERE/README.md" "$txn/new/README.md"
@@ -289,6 +291,7 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
     install -m 755 "$txn/new/awg-client" /usr/local/bin/awg-client.new \
       && mv -f /usr/local/bin/awg-client.new /usr/local/bin/awg-client || return 1
     install -m 755 "$txn/new/awg-watchdog" /usr/local/bin/awg-watchdog || return 1
+    install -m 755 "$txn/new/block-ping" /usr/local/bin/block-ping || return 1
     install -m 644 "$txn/new/awg-watchdog.service" /etc/systemd/system/awg-watchdog.service || return 1
     install -m 644 "$txn/new/awg-watchdog.timer" /etc/systemd/system/awg-watchdog.timer || return 1
     install -m 644 "$txn/new/README.md" "$DIR/README.md" || return 1

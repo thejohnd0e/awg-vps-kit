@@ -5,9 +5,18 @@ AmneziaWG (userspace `amneziawg-go`) on UDP 443 and the `awg-client` command to 
 clients. UDP-based, so it works where the ISP throttles TCP from foreign VPS hosters
 (see "When to use it").
 
-> **Part of a pair.** This kit and [xray-vps-kit](https://github.com/thejohnd0e/xray-vps-kit)
-> complement each other: AWG covers UDP, Xray (VLESS + REALITY + Vision) covers TCP. Use
-> whichever your network lets through, or run both on one server (see "Companion: xray-vps-kit").
+## Related Projects
+
+These projects complement each other: the kits set up the servers, and the proxy containers bring a
+tunnel into your local network as a plain HTTP/SOCKS5 proxy.
+
+- [xray-vps-kit](https://github.com/thejohnd0e/xray-vps-kit): installer, client manager and updater for an
+  **Xray VLESS + REALITY + Vision** server over TCP. AWG covers UDP, Xray covers TCP: use whichever your
+  network lets through, or run both on one server (see "Companion: xray-vps-kit").
+- [AmneziaWG-to-Proxy](https://github.com/thejohnd0e/AmneziaWG-to-Proxy): a Docker container that turns the
+  client config printed by `awg-client show NAME` into an HTTP/SOCKS5 proxy with automatic config failover.
+- [VLESS-to-HTTP](https://github.com/thejohnd0e/VLESS-to-HTTP): the same idea for **VLESS + REALITY**, a
+  container that turns a `vless://` link into an HTTP/SOCKS5 proxy.
 
 ## Requirements
 
@@ -138,6 +147,7 @@ awg-client list            # clients and their tunnel addresses
 awg-client remove <name>   # remove a client
 awg-client version          # installed kit and amneziawg versions
 awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 (without an argument: show it)
+awg-client mtu 1420         # MTU written into client configs (without an argument: show it; default 1420)
 ```
 
 - Name: letters, digits, `_`, `-`, up to 32 characters.
@@ -147,6 +157,10 @@ awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 (wi
 - Before every change a copy is saved as `awg0.conf.bak-awg-client`.
 - One config = one device. Two devices on the same config kick each other off.
 - Do not remove a client that is in use: that device loses its VPN immediately.
+- Client MTU is 1420 by default (1500 minus the tunnel overhead). Some sites (for example 2ip.io)
+  flag a tunnel MTU of 1280 as "VPN fingerprint". The server interface stays at 1280; `awg-client mtu N`
+  (1280-1500) changes only the client configs. A device keeps its old MTU until it imports
+  `awg-client show <name>` again. If the server's own uplink MTU is below 1500, use WAN MTU minus 80.
 
 ### Using a client config
 
@@ -154,7 +168,7 @@ awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 (wi
   Amnezia VPN app.
 - **OpenWrt (ZeroBlock / RouteRich):** create a network interface with
   `proto 'amneziawg'`, `awg_jc`, `awg_jmin`, `awg_jmax`, `awg_s1`, `awg_s2`, `awg_h1`-`awg_h4`,
-  `mtu '1280'`, and one peer with `public_key`, `preshared_key`, `endpoint_host`,
+  `mtu '1420'`, and one peer with `public_key`, `preshared_key`, `endpoint_host`,
   `endpoint_port '443'`, `allowed_ips '0.0.0.0/0'`, `persistent_keepalive '25'`,
   **`route_allowed_ips '0'`** (routing is done by ZeroBlock, not by the interface). Then add
   a ZeroBlock section of type `vpn` with that interface.
@@ -171,6 +185,26 @@ speed (measured: 1.0, 1.5 and 2.0 give the same throughput within the noise).
 The obfuscation parameters must be identical on server and client; `awg-client` copies
 them from `awg0.conf` (and `I1` from `protocol`). Do not change them on a server that has clients unless you
 re-issue all client configs.
+
+## Hiding the server from ping: `block-ping`
+
+Some sites measure round-trip times to the server and to the client and flag the difference
+as a tunnel (2ip.io "tunnel detection / double-sided ping"). Dropping incoming ping on the
+server removes that signal. It is **not** a guarantee against all VPN detection.
+
+```bash
+block-ping on                  # drop incoming ping on the uplink, also after reboot
+block-ping on --wan-if eth0    # choose the interface(s) yourself (comma separated)
+block-ping status              # active or not, dropped packets
+block-ping off                 # remove it completely
+./install.sh --block-ping      # do it right at install time
+```
+
+- Works with or without ufw/firewalld: it uses its own nftables table (`inet block_ping`, input
+  hook, priority -10) that runs before them and does not touch their rules. IPv4 and IPv6.
+- Only echo requests are dropped; other ICMP (errors, path MTU, neighbour discovery) stays.
+- Ping-based monitoring of the server will report it as down. It is off by default.
+- Without the kit: `curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/block-ping | bash -s -- on`
 
 ## Service and diagnostics
 
@@ -232,11 +266,11 @@ curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/unins
 It asks for confirmation. Add `-s -- --keep-config` after `bash` to keep `/etc/amnezia` (keys,
 clients) for a reinstall, or `-s -- --yes` to skip the question.
 
-Removes the service, watchdog timer, nftables table, ufw rules, sysctl file, binaries, `/etc/amnezia` and the kit clone in `/opt/awg-vps-kit`.
-Installed apt packages are left in place. `--keep-config` keeps `/etc/amnezia`, including
-`clients/`, `protocol` and any unfinished `transactions/` directory; a later reinstall still
-refuses to overwrite an existing `awg0.conf`, so restore it deliberately rather than re-running
-the installer over it.
+Removes the service, watchdog timer, `block-ping` (table, unit and files), nftables table, ufw rules,
+sysctl file, binaries, `/etc/amnezia` and the kit clone in `/opt/awg-vps-kit`. Installed apt packages
+are left in place. `--keep-config` keeps `/etc/amnezia`, including `clients/`, `protocol` and any
+unfinished `transactions/` directory; a later reinstall still refuses to overwrite an existing
+`awg0.conf`, so restore it deliberately rather than re-running the installer over it.
 
 ## When to use it
 

@@ -48,9 +48,10 @@ take_lock
 # Nothing of ours on this machine: say so instead of asking to confirm a removal.
 found=0
 for f in "$DIR" /etc/amnezia /etc/systemd/system/awg-quick@.service /etc/systemd/system/awg-watchdog.timer \
-         /etc/sysctl.d/99-awg.conf \
+         /etc/systemd/system/block-ping.service /etc/block-ping /etc/sysctl.d/99-awg.conf \
          /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg-quick \
-         /usr/local/bin/awg-client /usr/local/bin/awg-watchdog /opt/amneziawg /opt/awg-vps-kit; do
+         /usr/local/bin/awg-client /usr/local/bin/awg-watchdog /usr/local/bin/block-ping \
+         /opt/amneziawg /opt/awg-vps-kit; do
   [ ! -e "$f" ] || { found=1; break; }
 done
 if [ "$found" = 0 ] && command -v ip >/dev/null && ip link show "$IF" >/dev/null 2>&1; then found=1; fi
@@ -73,6 +74,7 @@ wan=$(grep -o 'oifname "[^"]*" masquerade' "$DIR/nat-up.nft" 2>/dev/null | cut -
 
 if command -v systemctl >/dev/null; then
   systemctl disable --now awg-watchdog.timer 2>/dev/null || true
+  systemctl disable --now block-ping.service 2>/dev/null || true
   systemctl disable --now "awg-quick@$IF" 2>/dev/null || true
 fi
 # no systemd (or the unit was not used): bring the interface down directly
@@ -83,7 +85,10 @@ fi
 if command -v pkill >/dev/null; then pkill -f "amneziawg-go $IF\$" 2>/dev/null || true; fi
 if command -v ip >/dev/null; then ip link delete "$IF" 2>/dev/null || true; fi
 rm -f "/var/run/amneziawg/$IF.sock"
-if command -v nft >/dev/null; then nft delete table ip awg_nat 2>/dev/null || true; fi
+if command -v nft >/dev/null; then
+  nft delete table ip awg_nat 2>/dev/null || true
+  nft delete table inet block_ping 2>/dev/null || true
+fi
 
 if command -v ufw >/dev/null && LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then
   [ -z "$port" ] || ufw delete allow "$port/udp" >/dev/null 2>&1 || true
@@ -91,10 +96,12 @@ if command -v ufw >/dev/null && LC_ALL=C ufw status 2>/dev/null | grep -q '^Stat
 fi
 
 rm -f /etc/systemd/system/awg-quick@.service /etc/systemd/system/awg-watchdog.service \
-      /etc/systemd/system/awg-watchdog.timer /etc/sysctl.d/99-awg.conf
+      /etc/systemd/system/awg-watchdog.timer /etc/systemd/system/block-ping.service \
+      /etc/sysctl.d/99-awg.conf
+rm -rf /etc/block-ping
 if command -v systemctl >/dev/null; then systemctl daemon-reload || true; fi
 rm -f /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg.real /usr/local/bin/awg-quick \
-      /usr/local/bin/awg-client /usr/local/bin/awg-watchdog
+      /usr/local/bin/awg-client /usr/local/bin/awg-watchdog /usr/local/bin/block-ping
 rm -rf /opt/amneziawg /opt/awg-vps-kit
 if [ "$KEEP" = 0 ]; then rm -rf /etc/amnezia; fi
 

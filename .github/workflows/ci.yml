@@ -14,9 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Syntax check
-        run: bash -n install.sh update.sh uninstall.sh awg-client awg-watchdog tests/test-install.sh tests/test-reliability.sh tests/helpers/reliability.sh
+        run: bash -n install.sh update.sh uninstall.sh awg-client awg-watchdog block-ping tests/test-install.sh tests/test-reliability.sh tests/helpers/reliability.sh
       - name: ShellCheck
-        run: shellcheck install.sh update.sh uninstall.sh awg-client awg-watchdog tests/test-install.sh tests/test-reliability.sh tests/helpers/reliability.sh
+        run: shellcheck install.sh update.sh uninstall.sh awg-client awg-watchdog block-ping tests/test-install.sh tests/test-reliability.sh tests/helpers/reliability.sh
 
   install-test:
     runs-on: ubuntu-24.04
