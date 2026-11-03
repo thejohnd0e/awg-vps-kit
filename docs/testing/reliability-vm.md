@@ -18,7 +18,7 @@ Never paste production keys, endpoints, QR codes or full configs into logs.
 | Kit commit | 621634d (`master`, before the doc-only commit) |
 | amneziawg-go / tools commits | b5928ef (2026-08-28) / ee0f0a9 (2026-08-12) |
 | Client platform | network namespace on the same VM running `awg-quick` (userspace client) |
-| Result | baseline, update, rollback, protocol changes, ufw, watchdog migration and recovery pass |
+| Result | baseline, update, rollback, protocol changes, ufw, watchdog, NAT idempotence, Docker, firewalld and keep-config checks executed; see the table |
 
 ## Results 2026-11-03
 
@@ -42,12 +42,18 @@ the working installation. Values are from that run.
 | Kill `amneziawg-go` | **before the watchdog:** `systemctl is-active` still `active`, `awg show` failed, interface and UDP port gone, no auto-restart; `update.sh` refused with "active but not usable" and left binaries unchanged |
 | Watchdog migration via `update.sh --force` | `awg-watchdog.timer` installed, enabled and active on the existing installation |
 | Kill `amneziawg-go` with the watchdog | interface down right after the kill, back within ~30 s without manual action (`awg-watchdog.service` logged the restart), traffic worked again |
-| `uninstall.sh --yes` | service inactive, timer `not-found`, script and units removed |
-| Reinstall | new install created the timer (enabled) and a client; traffic worked |
+| `nft -f nat-up.nft` twice | before the fix: second load succeeded and duplicated the rules (1 → 2 masquerade); after the guard was added: still 1 |
+| `awg-quick down` with the NAT table deleted | before: `PostDown` failed and `down` returned 1 (interface still removed); after `2>/dev/null || true`: return 0 |
+| `systemctl restart nftables` (default `flush ruleset`) | `awg_nat` vanished, the unit stayed `active` and client traffic stopped; the watchdog's new NAT check restored the table after 16 s and traffic worked again. ufw rules are flushed too and need `ufw reload` |
+| Docker installed (`FORWARD` policy DROP) | tunnel traffic kept working: the `awg_forward` base chain at `priority filter - 1` accepts the packet for the forward hook before the later chain's policy applies |
+| firewalld active (default `public` zone) | tunnel completely dead: ping to 10.99.0.1 lost 100%, forwarding blocked; unsupported without explicit zone/forward configuration |
+| `uninstall.sh --yes` | service inactive, watchdog timer `not-found`, script and units removed, `/etc/amnezia` removed |
+| `uninstall.sh --keep-config` | config kept, service and timer stopped, watchdog binary removed; a reinstall refused the existing `awg0.conf` as documented |
+| Reinstall after removal | new install with client `vmclient3`, timer active, traffic worked |
+| IPv6 | the VM has only a link-local address on `enp0s3` and no IPv6 default route, so a dual-stack leak test was not possible here |
 
-Not executed: Docker/iptables-nft and firewalld composition, `nft -f` twice, `systemctl restart
-nftables` with the default `flush ruleset`, a dual-stack IPv6 client, and the uninstall/keep-config
-cycle on this VM.
+Not executed: a dual-stack IPv6 client (needs an IPv6-capable uplink) and firewalld/Docker
+support work (both are findings, not fixes).
 
 
 ## Baseline

@@ -101,6 +101,7 @@ installed() { awk -F= -v k="$1" '$1==k{print $2}' "$DIR/versions" 2>/dev/null ||
 upstream() { git ls-remote "$1" HEAD 2>/dev/null | cut -f1; }
 # scripts, docs and the recorded kit version always follow the checkout
 refresh_scripts() {
+  apply_migrations
   install -m 755 "$HERE/awg-client" /usr/local/bin/awg-client
   install -m 755 "$HERE/awg-watchdog" /usr/local/bin/awg-watchdog
   install -m 644 "$HERE/README.md" "$DIR/README.md"
@@ -113,6 +114,22 @@ refresh_scripts() {
     install -m 644 "$HERE/awg-watchdog.service" "$HERE/awg-watchdog.timer" /etc/systemd/system/ 2>/dev/null || true
     systemctl daemon-reload 2>/dev/null || true
     systemctl enable --now awg-watchdog.timer >/dev/null 2>&1 || true
+  fi
+}
+
+# Server config migrations for installations created by older kits. Idempotent and
+# limited to the files this kit owns; the config is backed up before a rewrite.
+apply_migrations() {
+  local nat=$DIR/nat-up.nft conf=$DIR/$IF.conf ts
+  if [ -f "$nat" ] && ! grep -qx 'delete table ip awg_nat' "$nat"; then
+    { printf 'table ip awg_nat\n'; printf 'delete table ip awg_nat\n'; cat "$nat"; } > "$nat.new" \
+      && mv -f "$nat.new" "$nat"
+  fi
+  if [ -f "$conf" ] && grep -qx 'PostDown = nft delete table ip awg_nat' "$conf"; then
+    ts=$(date +%Y%m%d-%H%M%S)
+    cp -p "$conf" "$conf.bak-update-$ts"
+    sed -i 's#^PostDown = nft delete table ip awg_nat$#PostDown = nft delete table ip awg_nat 2>/dev/null || true#' "$conf"
+    chmod 600 "$conf"
   fi
 }
 
@@ -174,6 +191,7 @@ fi
 if [ "$SKIP_KIT" = 0 ]; then
   if [ -n "$summary" ]; then echo "Update available: $summary; updating."; else echo "Nothing new; reinstalling (--force)."; fi
 fi
+apply_migrations
 
 # the kit first: continue with the updated script
 if [ "$behind" -gt 0 ]; then

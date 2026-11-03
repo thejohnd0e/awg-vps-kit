@@ -172,8 +172,13 @@ journalctl -u awg-watchdog.service -n 20         # restarts the watchdog perform
 The unit is `oneshot`: if `amneziawg-go` dies, systemd still reports `active` while the
 interface and the UDP port are gone. `awg-watchdog.timer` runs every 30 s and restarts the
 unit in that case (logged in `awg-watchdog.service`); it does not restart on its own while
-`add`/`remove`/`protocol`/`update` holds the kit lock. To turn it off:
-`systemctl disable --now awg-watchdog.timer`.
+`add`/`remove`/`protocol`/`update` holds the kit lock. It also restores the `awg_nat` table
+if something removed it. To turn it off: `systemctl disable --now awg-watchdog.timer`.
+
+**Do not run `systemctl restart nftables`** on this host: the default `/etc/nftables.conf`
+starts with `flush ruleset` and wipes `awg_nat` and the ufw rules. If it happens, the watchdog
+recreates `awg_nat` within 30 s, but ufw rules need `ufw reload` (and `ufw route allow` for
+the tunnel is lost until then).
 
 A `latest handshake` older than a couple of minutes for an enabled client means the
 tunnel does not work: UDP port blocked (provider firewall / ISP), wrong keys, or

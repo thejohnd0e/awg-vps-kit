@@ -75,6 +75,8 @@ case_cli() {
   for f in srv.pub protocol endpoint nat-up.nft README.md; do
     [ "$(stat -c %a "$DIR/$f")" = 644 ] || fail "$f must be mode 644 (got $(stat -c %a "$DIR/$f"))"
   done
+  grep -qx 'delete table ip awg_nat' "$DIR/nat-up.nft" || fail "nat-up.nft must be idempotent"
+  grep -q '^PostDown = .*|| true$' "$CONF" || fail "PostDown must ignore a missing NAT table"
 
   # Boundary values are accepted and used as-is.
   rm -rf "$DIR"
@@ -281,6 +283,14 @@ case_update() {
   fi
   [ "$(stat -c %y /usr/local/bin/awg)" = "$mtime" ] || fail "refused update must not replace binaries"
 
+  # Migration of installations created before the idempotent NAT and robust PostDown.
+  printf 'table ip awg_nat {\n}\n' > "$DIR/nat-up.nft"
+  sed -i 's|^PostDown = .*|PostDown = nft delete table ip awg_nat|' "$CONF"
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  grep -qx 'delete table ip awg_nat' "$DIR/nat-up.nft" || fail "update must make nat-up.nft idempotent"
+  grep -q '^PostDown = .*|| true$' "$CONF" || fail "update must fix PostDown for an old installation"
+  mtime=$(stat -c %y /usr/local/bin/awg)
+
   # A stopped service is not an implicit --no-restart.
   if SYSTEMCTL_ACTIVE=0 "$ROOT/update.sh" --force --bin-dir "$BIN" >/dev/null 2>&1; then
     fail "update must refuse a stopped service without --no-restart"
@@ -381,7 +391,12 @@ EOS
 [ "${WD_LINK_FAIL:-0}" = 1 ] && exit 1
 exit 0
 EOS
-  chmod 755 "$tmp/bin/systemctl" "$tmp/bin/awg" "$tmp/bin/ip"
+  cat > "$tmp/bin/nft" <<'EOS'
+#!/bin/sh
+[ "${WD_NFT_FAIL:-0}" = 1 ] && exit 1
+exit 0
+EOS
+  chmod 755 "$tmp/bin/systemctl" "$tmp/bin/awg" "$tmp/bin/ip" "$tmp/bin/nft"
 
   PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog" || fail "watchdog must exit 0 on a healthy tunnel"
   [ ! -s /tmp/awg-wd-restarts ] || fail "watchdog restarted a healthy tunnel"
@@ -394,10 +409,15 @@ EOS
   grep -qx 'restart awg-quick@awg0' /tmp/awg-wd-restarts || fail "watchdog ignored a missing interface"
   : > /tmp/awg-wd-restarts
 
+  # NAT can disappear without the interface dying (systemctl restart nftables).
+  WD_NFT_FAIL=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog" || fail "watchdog must exit 0 after a restart attempt"
+  grep -qx 'restart awg-quick@awg0' /tmp/awg-wd-restarts || fail "watchdog ignored a missing NAT table"
+  : > /tmp/awg-wd-restarts
+
   WD_ACTIVE=0 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
   [ ! -s /tmp/awg-wd-restarts ] || fail "watchdog restarted an inactive unit"
   rm -rf "$tmp"; rm -f "$CONF"
-  ok "watchdog: healthy, dead daemon, missing interface, inactive unit"
+  ok "watchdog: healthy, dead daemon, missing interface, missing NAT, inactive unit"
 }
 
 if [ "$CASE" = all ]; then

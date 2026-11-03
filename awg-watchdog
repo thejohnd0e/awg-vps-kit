@@ -20,11 +20,16 @@ if command -v flock >/dev/null 2>&1; then
 fi
 
 # amneziawg-go owns the interface; if it died, both the device and the awg query
-# are gone even though the oneshot unit is still "active".
-if awg show "$IF" >/dev/null 2>&1 && ip link show "$IF" >/dev/null 2>&1; then
-  exit 0
+# are gone even though the oneshot unit is still "active". The NAT table can also
+# disappear without touching the interface (e.g. `systemctl restart nftables`).
+healthy=1
+awg show "$IF" >/dev/null 2>&1 || healthy=0
+ip link show "$IF" >/dev/null 2>&1 || healthy=0
+if command -v nft >/dev/null 2>&1 && ! nft list table ip awg_nat >/dev/null 2>&1; then
+  healthy=0
 fi
+[ "$healthy" = 1 ] && exit 0
 
-echo "awg-watchdog: $IF is gone while $UNIT reports active; restarting" >&2
+echo "awg-watchdog: $IF or its NAT table is gone while $UNIT reports active; restarting" >&2
 systemctl restart "$UNIT" || echo "awg-watchdog: restart of $UNIT failed" >&2
 exit 0

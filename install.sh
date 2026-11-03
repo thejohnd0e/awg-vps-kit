@@ -267,6 +267,8 @@ echo "$ENDPOINT" > "$DIR/endpoint"; chmod 644 "$DIR/endpoint"
 # -------------------------------------------------------------- firewall
 # NAT through nftables (own table, removed on stop).
 cat > "$DIR/nat-up.nft" <<EOF
+table ip awg_nat
+delete table ip awg_nat
 table ip awg_nat {
   chain post {
     type nat hook postrouting priority srcnat; policy accept;
@@ -297,7 +299,7 @@ H2 = ${H[1]}
 H3 = ${H[2]}
 H4 = ${H[3]}
 PostUp = nft -f $DIR/nat-up.nft
-PostDown = nft delete table ip awg_nat
+PostDown = nft delete table ip awg_nat 2>/dev/null || true
 EOF
 chmod 600 "$DIR/$IF.conf"
 [ "$PROTOCOL" != 2.0 ] || printf 'S3 = %s\nS4 = %s\n' "$S3" "$S4" >> "$DIR/$IF.conf"
