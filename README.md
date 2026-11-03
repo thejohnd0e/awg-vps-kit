@@ -53,7 +53,8 @@ curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/updat
 curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/uninstall.sh | bash
 ```
 
-`install.sh` options (all optional):
+`install.sh` options (all optional; `install.sh --help` prints the same list). Values are validated
+before anything is installed: the port must be 1-65535 and every subnet octet 0-255.
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -178,8 +179,8 @@ The server config, keys and clients are not touched. A binary update restarts th
 service (clients reconnect in a few seconds); the previous binaries are kept in
 `/opt/amneziawg/prev`. Servers installed before `update.sh` existed have no recorded
 versions and are reported as "unknown", so the first update rebuilds. Options go after
-`bash -s --`: `--check` (report only; exit code 0 = latest installed, 10 = update available),
-`--force`, `--bin-dir DIR`, `--no-restart`.
+`bash -s --`: `--check` (report only; exit code 0 = latest installed, 10 = update available;
+does not pull the kit or change installed files), `--force`, `--bin-dir DIR`, `--no-restart`.
 
 ## Uninstall
 

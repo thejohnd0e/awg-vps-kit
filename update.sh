@@ -4,62 +4,92 @@
 # amneziawg binaries (rebuilt from upstream), then restarts the service.
 # Server config and clients are not touched. Run as root.
 #
-#   curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash -s -- --check   only report (exit 0: latest, 10: update available)
-#   curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash                 update what is outdated
-#   --force                   rebuild binaries even if up to date
-#   --bin-dir DIR             use prebuilt amneziawg-go, awg, awg-quick from DIR (skip build)
-#   --no-restart              do not restart awg-quick@awg0 (new binaries apply after restart)
+# Usage: update.sh [options]   (update.sh --help prints the same list)
 set -euo pipefail
 
-# Started through `curl ... | bash` (no kit checkout next to this script): make sure the kit is in
-# /opt/awg-vps-kit (clone or fast-forward) and continue from it, whatever the current folder is.
-if [ ! -f "$(dirname "$0")/awg-client" ]; then
-  KIT=/opt/awg-vps-kit
-  cd /   # the current folder does not matter (it may even have been deleted)
-  [ "$(id -u)" = 0 ] || { echo "error: run as root" >&2; exit 1; }
-  command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null; }
-  if [ -d "$KIT/.git" ]; then
-    git -C "$KIT" pull --ff-only -q || { echo "error: cannot fast-forward $KIT (local changes?)" >&2; exit 1; }
-  elif [ -e "$KIT" ]; then
-    echo "error: $KIT exists but is not a clone of the kit; move it away and run this again" >&2; exit 1
-  else
-    git clone -q https://github.com/thejohnd0e/awg-vps-kit.git "$KIT"
-  fi
-  exec "$KIT/update.sh" "$@"
-fi
+die() { echo "error: $*" >&2; exit 1; }
+log() { printf '\n==> %s\n' "$*"; }
+
+usage() {
+  cat <<'EOF'
+AWG VPS Kit updater: updates the kit and the amneziawg binaries when newer ones exist.
+Server config and clients are not touched. Run as root.
+
+  --check                   only report (exit 0: latest installed, 10: update available)
+  --force                   rebuild binaries even if up to date
+  --bin-dir DIR             use prebuilt amneziawg-go, awg, awg-quick from DIR (skip build)
+  --no-restart              do not restart awg-quick@awg0 (new binaries apply after restart)
+
+Examples:
+  curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash -s -- --check
+  curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash
+EOF
+}
+
+need_value() {
+  [ $# -ge 2 ] || die "$1 requires a value"
+  case "$2" in --*) die "$1 requires a value" ;; esac
+}
 
 CHECK=0; FORCE=0; BIN_DIR=; NO_RESTART=0; SKIP_KIT=0
+ORIG_ARGS=("$@")
+for arg in "$@"; do [ "$arg" != --check ] || CHECK=1; done
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK=1; shift ;;
     --force) FORCE=1; shift ;;
-    --bin-dir) BIN_DIR=$2; shift 2 ;;
+    --bin-dir) need_value "$@"; BIN_DIR=$2; shift 2 ;;
     --no-restart) NO_RESTART=1; shift ;;
     --skip-kit) SKIP_KIT=1; shift ;;   # internal: set after the kit was pulled
-    -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown option: $1" >&2; exit 1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
   esac
 done
 
-HERE=$(cd "$(dirname "$0")" && pwd)
+# Started through `curl ... | bash` (no kit checkout next to this script): make sure the kit is in
+# /opt/awg-vps-kit (clone or fast-forward) and continue from it, whatever the current folder is.
+# --check is read-only: it may inspect an existing checkout but never pulls, clones or installs.
+SELF=${BASH_SOURCE[0]:-}
+SELF_DIR=
+[ -z "$SELF" ] || SELF_DIR=$(cd "$(dirname "$SELF")" && pwd)
+if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/awg-client" ]; then
+  KIT=/opt/awg-vps-kit
+  cd /
+  [ "$(id -u)" = 0 ] || die "run as root"
+  if [ -d "$KIT/.git" ]; then
+    if [ "$CHECK" = 0 ]; then
+      git -C "$KIT" pull --ff-only -q || die "cannot fast-forward $KIT (local changes?)"
+    fi
+  elif [ "$CHECK" = 1 ]; then
+    die "no kit checkout at $KIT: nothing to check (run update.sh from the kit, or install first)"
+  elif [ -e "$KIT" ]; then
+    die "$KIT exists but is not a clone of the kit; move it away and run this again"
+  else
+    command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null; }
+    git clone -q https://github.com/thejohnd0e/awg-vps-kit.git "$KIT"
+  fi
+  exec "$KIT/update.sh" "${ORIG_ARGS[@]}"
+fi
+
+HERE=$SELF_DIR
 DIR=/etc/amnezia/amneziawg
 IF=awg0
 UP_GO=https://github.com/amnezia-vpn/amneziawg-go
 UP_TOOLS=https://github.com/amnezia-vpn/amneziawg-tools
-log() { printf '\n==> %s\n' "$*"; }
-die() { echo "error: $*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "run as root"
 [ -f "$DIR/$IF.conf" ] || die "$DIR/$IF.conf not found: nothing installed here (use install.sh)"
 
 installed() { awk -F= -v k="$1" '$1==k{print $2}' "$DIR/versions" 2>/dev/null || true; }
-upstream() { git ls-remote "$1" HEAD | cut -f1; }
+upstream() { git ls-remote "$1" HEAD 2>/dev/null | cut -f1; }
 # scripts, docs and the recorded kit version always follow the checkout
 refresh_scripts() {
   install -m 755 "$HERE/awg-client" /usr/local/bin/awg-client
   install -m 644 "$HERE/README.md" "$DIR/README.md"
   printf 'version=%s\ncommit=%s\n' "$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)" \
     "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$DIR/kit-version"
+  chmod 644 "$DIR/kit-version"
 }
 
 changes=()
@@ -69,7 +99,7 @@ curver=$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)
 behind=0
 if [ "$SKIP_KIT" = 0 ] && [ -d "$HERE/.git" ] && command -v git >/dev/null \
    && git -C "$HERE" rev-parse -q --verify '@{u}' >/dev/null 2>&1; then
-  git -C "$HERE" fetch -q
+  git -C "$HERE" fetch -q || die "cannot fetch the kit's upstream in $HERE"
   behind=$(git -C "$HERE" rev-list --count 'HEAD..@{u}')
   if [ "$behind" -gt 0 ]; then
     newver=$(git -C "$HERE" show '@{u}:VERSION' 2>/dev/null | tr -d '\r\n ' || true)
@@ -92,8 +122,8 @@ bin_outdated=0
 latest="kit $curver"
 for comp in go tools; do
   if [ "$comp" = go ]; then name=amneziawg-go; url=$UP_GO; else name=amneziawg-tools; url=$UP_TOOLS; fi
-  have=$(installed "$name"); want=$(upstream "$url")
-  [ -n "$want" ] || die "cannot reach $url"
+  have=$(installed "$name"); want=$(upstream "$url" || true)
+  [ -n "$want" ] || die "cannot reach $url (git ls-remote failed); check network access to GitHub"
   if [ "$have" = "$want" ]; then
     echo "$name: up to date (${have:0:7})"
     latest+=", $name ${have:0:7}"
@@ -124,7 +154,7 @@ fi
 # the kit first: continue with the updated script
 if [ "$behind" -gt 0 ]; then
   git -C "$HERE" pull --ff-only -q || die "cannot fast-forward $HERE (local changes?)"
-  exec bash "$HERE/update.sh" --skip-kit "$@"
+  exec bash "$HERE/update.sh" --skip-kit "${ORIG_ARGS[@]}"
 fi
 
 replaced=0
@@ -153,7 +183,7 @@ refresh_scripts
 if [ "$replaced" = 1 ] && [ "$NO_RESTART" = 0 ] && command -v systemctl >/dev/null \
    && systemctl is-active --quiet "awg-quick@$IF"; then
   log "Restarting awg-quick@$IF (clients reconnect in a few seconds)"
-  systemctl restart "awg-quick@$IF"
+  systemctl restart "awg-quick@$IF" || true
   sleep 2
   systemctl is-active --quiet "awg-quick@$IF" || { journalctl -u "awg-quick@$IF" -n 30 --no-pager; die "service did not start; previous binaries are in /opt/amneziawg/prev"; }
   awg show "$IF" | head -3

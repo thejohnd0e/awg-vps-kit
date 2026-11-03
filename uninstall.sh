@@ -2,24 +2,38 @@
 # AWG VPS Kit uninstaller: stops the service and removes everything install.sh created.
 # Installed apt packages (nftables, qrencode, ...) are left alone. Run as root.
 #
-#   curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/uninstall.sh | bash -s -- [options]
-#   -y, --yes                 do not ask for confirmation
-#   --keep-config             keep /etc/amnezia (server keys, clients) for a later reinstall
+# Usage: uninstall.sh [options]   (uninstall.sh --help prints the same list)
 set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+AWG VPS Kit uninstaller: stops the service and removes everything install.sh created.
+Installed apt packages are left alone. Run as root.
+
+  -y, --yes        do not ask for confirmation
+  --keep-config    keep /etc/amnezia (server keys, clients) for a later reinstall
+  -h, --help       this help
+
+Examples:
+  curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/uninstall.sh | bash -s -- --yes
+  curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/uninstall.sh | bash -s -- --keep-config
+EOF
+}
+
+die() { echo "error: $*" >&2; exit 1; }
 
 YES=0; KEEP=0
 while [ $# -gt 0 ]; do
   case "$1" in
     -y|--yes) YES=1; shift ;;
     --keep-config) KEEP=1; shift ;;
-    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown option: $1" >&2; exit 1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
   esac
 done
 
 DIR=/etc/amnezia/amneziawg
 IF=awg0
-die() { echo "error: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
 # Nothing of ours on this machine: say so instead of asking to confirm a removal.
@@ -60,7 +74,7 @@ if command -v ip >/dev/null; then ip link delete "$IF" 2>/dev/null || true; fi
 rm -f "/var/run/amneziawg/$IF.sock"
 if command -v nft >/dev/null; then nft delete table ip awg_nat 2>/dev/null || true; fi
 
-if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
+if command -v ufw >/dev/null && LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then
   [ -z "$port" ] || ufw delete allow "$port/udp" >/dev/null 2>&1 || true
   [ -z "$wan" ] || ufw route delete allow in on "$IF" out on "$wan" >/dev/null 2>&1 || true
 fi

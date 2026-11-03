@@ -2,64 +2,95 @@
 # AmneziaWG server installer (userspace amneziawg-go) for Debian/Ubuntu.
 # Run as root on a fresh server. See README.md.
 #
-#   ./install.sh [options]
-#     --subnet 10.79.0      tunnel /24 prefix (server gets .1)        default: 10.77.0
-#     --port 443            UDP listen port                           default: 443
-#     --endpoint IP|HOST    public address written into client files  default: auto-detected
-#     --wan-if eth0         outgoing interface for NAT                default: from default route
-#     --bin-dir DIR         use prebuilt amneziawg-go, awg, awg-quick from DIR (skip build)
-#     --build-only DIR      only build the three binaries into DIR and exit
-#     --first-client NAME   create a client right after install       default: none
-#     --protocol 1.0|1.5|2.0  AmneziaWG protocol version                  default: 1.0 (menu 1/2/3 in a terminal)
-#     --no-service          write files only: no systemd, sysctl, firewall (for testing)
-#     --allow-outdated      do not stop if this git checkout is behind upstream
+# Usage: install.sh [options]   (install.sh --help prints the same list)
 set -euo pipefail
 
-# Started through `curl ... | bash` (no kit checkout next to this script): fetch the kit into
-# /opt/awg-vps-kit (or fast-forward the clone there) and continue from it, so the result does
-# not depend on the current folder.
-if [ ! -f "$(dirname "$0")/awg-client" ]; then
-  KIT=/opt/awg-vps-kit
-  cd /   # the current folder does not matter (it may even have been deleted)
-  [ "$(id -u)" = 0 ] || { echo "error: run as root" >&2; exit 1; }
-  command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null; }
-  if [ -d "$KIT/.git" ]; then
-    git -C "$KIT" pull --ff-only -q || { echo "error: cannot fast-forward $KIT (local changes?)" >&2; exit 1; }
-  elif [ -e "$KIT" ]; then
-    echo "error: $KIT exists but is not a clone of the kit; move it away and run this again" >&2; exit 1
-  else
-    git clone -q https://github.com/thejohnd0e/awg-vps-kit.git "$KIT"
-  fi
-  exec "$KIT/install.sh" "$@"
-fi
+die() { echo "error: $*" >&2; exit 1; }
+log() { printf '\n==> %s\n' "$*"; }
+
+usage() {
+  cat <<'EOF'
+AmneziaWG server installer (userspace amneziawg-go) for Debian/Ubuntu.
+Run as root on a fresh server. See README.md.
+
+  --subnet 10.79.0      tunnel /24 prefix (server gets .1)        default: 10.77.0
+  --port 443            UDP listen port                           default: 443
+  --endpoint IP|HOST    public address written into client files  default: auto-detected
+  --wan-if eth0         outgoing interface for NAT                default: from default route
+  --bin-dir DIR         use prebuilt amneziawg-go, awg, awg-quick from DIR (skip build)
+  --build-only DIR      only build the three binaries into DIR and exit
+  --first-client NAME   create a client right after install       default: none
+  --protocol 1.0|1.5|2.0  AmneziaWG protocol version                  default: 1.0 (menu 1/2/3 in a terminal)
+  --no-service          write files only: no systemd, sysctl, firewall (for testing)
+  --allow-outdated      do not stop if this git checkout is behind upstream
+EOF
+}
+
+need_value() {  # need_value "$@" within an option branch
+  [ $# -ge 2 ] || die "$1 requires a value"
+  case "$2" in
+    --*) die "$1 requires a value" ;;
+  esac
+}
+
+valid_subnet() {
+  local re='^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$' a b c
+  [[ "$1" =~ $re ]] || return 1
+  a=$((10#${BASH_REMATCH[1]})); b=$((10#${BASH_REMATCH[2]})); c=$((10#${BASH_REMATCH[3]}))
+  [ "$a" -le 255 ] && [ "$b" -le 255 ] && [ "$c" -le 255 ]
+}
 
 SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; PROTOCOL=; NO_SERVICE=0; ALLOW_OUTDATED=0
+ORIG_ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
-    --subnet) SUBNET=$2; shift 2 ;;
-    --port) PORT=$2; shift 2 ;;
-    --endpoint) ENDPOINT=$2; shift 2 ;;
-    --wan-if) WAN_IF=$2; shift 2 ;;
-    --bin-dir) BIN_DIR=$2; shift 2 ;;
-    --build-only) BUILD_ONLY=$2; shift 2 ;;
-    --first-client) FIRST=$2; shift 2 ;;
-    --protocol) PROTOCOL=${2:-}; shift 2 ;;
+    --subnet) need_value "$@"; SUBNET=$2; shift 2 ;;
+    --port) need_value "$@"; PORT=$2; shift 2 ;;
+    --endpoint) need_value "$@"; ENDPOINT=$2; shift 2 ;;
+    --wan-if) need_value "$@"; WAN_IF=$2; shift 2 ;;
+    --bin-dir) need_value "$@"; BIN_DIR=$2; shift 2 ;;
+    --build-only) need_value "$@"; BUILD_ONLY=$2; shift 2 ;;
+    --first-client) need_value "$@"; FIRST=$2; shift 2 ;;
+    --protocol) need_value "$@"; PROTOCOL=$2; shift 2 ;;
     --no-service) NO_SERVICE=1; shift ;;
     --allow-outdated) ALLOW_OUTDATED=1; shift ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown option: $1" >&2; exit 1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown option: $1" ;;
   esac
 done
 
-HERE=$(cd "$(dirname "$0")" && pwd)
+[[ "$PORT" =~ ^[0-9]{1,5}$ ]] || die "--port must be a number (1-65535)"
+PORT=$((10#$PORT))
+{ [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ]; } || die "--port must be 1-65535"
+valid_subnet "$SUBNET" || die "--subnet must look like 10.79.0 (each part 0-255)"
+
+# Started through `curl ... | bash` or with a lone script file: no kit checkout next to this
+# script, so fetch the kit into /opt/awg-vps-kit (or fast-forward the clone there) and continue
+# from it. BASH_SOURCE tells a piped run apart from a run in a folder that merely contains
+# an unrelated awg-client.
+SELF=${BASH_SOURCE[0]:-}
+SELF_DIR=
+[ -z "$SELF" ] || SELF_DIR=$(cd "$(dirname "$SELF")" && pwd)
+if [ -z "$SELF_DIR" ] || [ ! -f "$SELF_DIR/awg-client" ]; then
+  KIT=/opt/awg-vps-kit
+  cd /   # the current folder does not matter (it may even have been deleted)
+  [ "$(id -u)" = 0 ] || die "run as root"
+  command -v git >/dev/null || { apt-get update -qq && apt-get install -y -qq git ca-certificates >/dev/null; }
+  if [ -d "$KIT/.git" ]; then
+    git -C "$KIT" pull --ff-only -q || die "cannot fast-forward $KIT (local changes?)"
+  elif [ -e "$KIT" ]; then
+    die "$KIT exists but is not a clone of the kit; move it away and run this again"
+  else
+    git clone -q https://github.com/thejohnd0e/awg-vps-kit.git "$KIT"
+  fi
+  exec "$KIT/install.sh" "${ORIG_ARGS[@]}"
+fi
+
+HERE=$SELF_DIR
 DIR=/etc/amnezia/amneziawg
 IF=awg0
-log() { printf '\n==> %s\n' "$*"; }
-die() { echo "error: $*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "run as root"
-[[ "$SUBNET" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]] || die "--subnet must look like 10.79.0"
-[[ "$PORT" =~ ^[0-9]+$ ]] || die "--port must be a number"
 
 # Protocol version: asked first, before the slow steps; silently 1.0 without a terminal.
 if [ -z "$PROTOCOL" ] && [ -z "$BUILD_ONLY" ] && ( : < /dev/tty ) 2>/dev/null; then
@@ -98,15 +129,16 @@ if [ -z "$BUILD_ONLY" ] && [ "$ALLOW_OUTDATED" = 0 ] && command -v git >/dev/nul
 fi
 
 # ---------------------------------------------------------------- build
-build_binaries() {  # build_binaries <outdir>
-  local out=$1 src go_bin need have
+build_binaries() (  # build_binaries <outdir>; subshell so cleanup covers every exit path
+  set -euo pipefail
+  local out=$1 src go_bin need have arch json file sha
   mkdir -p "$out"
   log "Installing build dependencies"
   apt-get update -qq
-  apt-get install -y -qq git make gcc curl ca-certificates >/dev/null
+  apt-get install -y -qq git make gcc curl ca-certificates
 
   src=$(mktemp -d /var/tmp/awg-build.XXXXXX)
-  trap 'rm -rf "$src"' RETURN
+  trap 'rm -rf "$src"' EXIT
   git clone -q --depth 1 https://github.com/amnezia-vpn/amneziawg-go "$src/awg-go"
   git clone -q --depth 1 https://github.com/amnezia-vpn/amneziawg-tools "$src/awg-tools"
   echo "amneziawg-go:    $(git -C "$src/awg-go" log -1 --format='%h %ad' --date=short)"
@@ -122,13 +154,12 @@ build_binaries() {  # build_binaries <outdir>
   if command -v go >/dev/null; then have=$(go env GOVERSION | sed 's/^go//'); fi
   if [ -z "$have" ] || [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -1)" != "$need" ]; then
     log "Go $need or newer is needed (have: ${have:-none}), downloading the official toolchain"
-    local arch json file sha
     case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) die "unsupported CPU $(uname -m)" ;; esac
-    json=$(curl -fsSL 'https://go.dev/dl/?mode=json')
+    json=$(curl -fsSL 'https://go.dev/dl/?mode=json') || die "cannot download the Go release list from go.dev"
     file=$(printf '%s\n' "$json" | grep -o "\"filename\": \"go[0-9.]*\.linux-$arch\.tar\.gz\"" | head -1 | cut -d'"' -f4)
     [ -n "$file" ] || die "cannot find a Go tarball for $arch"
     sha=$(printf '%s\n' "$json" | grep -A8 "\"filename\": \"$file\"" | grep '"sha256"' | head -1 | cut -d'"' -f4)
-    curl -fL -# "https://go.dev/dl/$file" -o "$src/go.tgz"
+    curl -fL -# "https://go.dev/dl/$file" -o "$src/go.tgz" || die "cannot download $file"
     [ "$(sha256sum "$src/go.tgz" | cut -d' ' -f1)" = "$sha" ] || die "Go tarball checksum mismatch"
     tar -C "$src" -xzf "$src/go.tgz"          # extracts to $src/go
     go_bin=$src/go/bin/go
@@ -148,7 +179,7 @@ build_binaries() {  # build_binaries <outdir>
     echo "amneziawg-go=$(git -C "$src/awg-go" rev-parse HEAD)"
     echo "amneziawg-tools=$(git -C "$src/awg-tools" rev-parse HEAD)"
   } > "$out/versions"
-}
+)
 
 if [ -n "$BUILD_ONLY" ]; then
   build_binaries "$BUILD_ONLY"
@@ -172,7 +203,7 @@ install -m 755 "$HERE/awg-client" /usr/local/bin/awg-client
 [ -n "$WAN_IF" ] || die "cannot detect the outgoing interface, pass --wan-if"
 if [ -z "$ENDPOINT" ]; then
   ENDPOINT=$(curl -4 -fsS --max-time 10 https://api.ipify.org || true)
-  [ -n "$ENDPOINT" ] || die "cannot detect the public IP, pass --endpoint"
+  [ -n "$ENDPOINT" ] || die "cannot detect the public IP (api.ipify.org unreachable), pass --endpoint"
 fi
 
 # ----------------------------------------------------------- parameters
@@ -197,19 +228,24 @@ if [ "$PROTOCOL" = 2.0 ]; then
   H=("${R[0]}-${R[1]}" "${R[2]}-${R[3]}" "${R[4]}-${R[5]}" "${R[6]}-${R[7]}")
 fi
 
-mkdir -p "$DIR/clients"; chmod 700 "$DIR"; umask 077
-awg genkey | tee "$DIR/srv.key" | awg pubkey > "$DIR/srv.pub"
+mkdir -p "$DIR/clients"
+chmod 700 "$DIR" "$DIR/clients"
+( umask 077
+  awg genkey > "$DIR/srv.key"
+  awg pubkey < "$DIR/srv.key" > "$DIR/srv.pub"
+)
+chmod 600 "$DIR/srv.key"; chmod 644 "$DIR/srv.pub"
 [ ! -f "$BIN_DIR/versions" ] || install -m 644 "$BIN_DIR/versions" "$DIR/versions"
 {
   echo "version=$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)"
   echo "commit=$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-} > "$DIR/kit-version"
-echo "$ENDPOINT" > "$DIR/endpoint"
+} > "$DIR/kit-version"; chmod 644 "$DIR/kit-version"
+echo "$ENDPOINT" > "$DIR/endpoint"; chmod 644 "$DIR/endpoint"
 {
   echo "protocol=$PROTOCOL"
   # 1.5: QUIC-like Initial header, random connection id, then random payload (client side only)
   [ "$PROTOCOL" != 1.5 ] || echo "I1=<b 0xc00000000108><r 8><b 0x00><r 64>"
-} > "$DIR/protocol"
+} > "$DIR/protocol"; chmod 644 "$DIR/protocol"
 
 # -------------------------------------------------------------- firewall
 # NAT through nftables (own table, removed on stop).
@@ -226,6 +262,7 @@ table ip awg_nat {
   }
 }
 EOF
+chmod 644 "$DIR/nat-up.nft"
 
 cat > "$DIR/$IF.conf" <<EOF
 [Interface]
@@ -245,6 +282,7 @@ H4 = ${H[3]}
 PostUp = nft -f $DIR/nat-up.nft
 PostDown = nft delete table ip awg_nat
 EOF
+chmod 600 "$DIR/$IF.conf"
 [ "$PROTOCOL" != 2.0 ] || printf 'S3 = %s\nS4 = %s\n' "$S3" "$S4" >> "$DIR/$IF.conf"
 install -m 644 "$HERE/README.md" "$DIR/README.md"
 
@@ -252,12 +290,14 @@ if [ "$NO_SERVICE" = 1 ]; then
   log "Files written (--no-service): $DIR"
 else
   log "Enabling IP forwarding"
-  echo 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-awg.conf
+  printf '%s\n' 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-awg.conf
+  chmod 644 /etc/sysctl.d/99-awg.conf
   sysctl -q -p /etc/sysctl.d/99-awg.conf
 
   # ufw (if active) also needs the UDP port and a forwarding rule; its own FORWARD
   # policy is DROP and would block the tunnel even though the nft table accepts it.
-  if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
+  # LC_ALL=C: the status line is localised otherwise.
+  if command -v ufw >/dev/null && LC_ALL=C ufw status | grep -q '^Status: active'; then
     log "ufw is active: allowing $PORT/udp and routing $IF -> $WAN_IF"
     ufw allow "$PORT/udp" >/dev/null
     ufw route allow in on "$IF" out on "$WAN_IF" >/dev/null
@@ -281,6 +321,7 @@ ExecStop=/usr/local/bin/awg-quick down %i
 [Install]
 WantedBy=multi-user.target
 EOF
+  chmod 644 /etc/systemd/system/awg-quick@.service
   systemctl daemon-reload
   systemctl enable "awg-quick@$IF"
   systemctl start "awg-quick@$IF" || true

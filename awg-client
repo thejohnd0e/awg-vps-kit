@@ -34,7 +34,15 @@ EOF
 }
 
 kv() {  # kv <file> <key>: value from a key=value file, empty if missing
-  awk -F= -v k="$2" '$1==k{print $2; exit}' "$1" 2>/dev/null || true
+  # Everything after the first '=' belongs to the value (I-signatures may contain '=').
+  awk -F= -v k="$2" '$1==k{sub(/^[^=]*=/,""); print; exit}' "$1" 2>/dev/null || true
+}
+format_endpoint() {  # format_endpoint <host> <port>; brackets bare IPv6 literals
+  case "$1" in
+    \[*\]) printf '%s:%s\n' "$1" "$2" ;;
+    *:*)   printf '[%s]:%s\n' "$1" "$2" ;;
+    *)     printf '%s:%s\n' "$1" "$2" ;;
+  esac
 }
 show_version() {
   local v c go tools pr
@@ -92,7 +100,7 @@ $(extra_fields)
 [Peer]
 PublicKey = $(cat "$DIR/srv.pub")
 PresharedKey = $psk
-Endpoint = $(cat "$DIR/endpoint"):$(iface_val ListenPort)
+Endpoint = $(format_endpoint "$(cat "$DIR/endpoint")" "$(iface_val ListenPort)")
 AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
