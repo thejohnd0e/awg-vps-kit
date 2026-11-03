@@ -13,12 +13,38 @@ Never paste production keys, endpoints, QR codes or full configs into logs.
 
 | Field | Value |
 |---|---|
-| Date | not executed in this session (2026-11-03) |
-| OS image | |
-| Kit commit | |
-| amneziawg-go / tools commits | |
-| Client platform | |
-| Result | |
+| Date | 2026-11-03 |
+| OS image | Debian 13.7 (trixie), kernel 6.12.107, VirtualBox `Deb_13_test` (192.168.0.141) |
+| Kit commit | 621634d (`master`, before the doc-only commit) |
+| amneziawg-go / tools commits | b5928ef (2026-08-28) / ee0f0a9 (2026-08-12) |
+| Client platform | network namespace on the same VM running `awg-quick` (userspace client) |
+| Result | baseline, update, rollback, protocol changes and ufw pass; systemd gap confirmed |
+
+## Results 2026-11-03
+
+Executed on the snapshot `before-reliability-2026-11-03` (VirtualBox), then the VM was left with
+the working installation. Values are from that run.
+
+| Check | Result |
+|---|---|
+| `tests/test-install.sh /opt/awg-bin` | pass on Debian 13.7 |
+| `tests/test-reliability.sh /opt/awg-bin all` | pass (cli, bootstrap, cleanup, lock, peers, protocol, update) |
+| Live install (`--subnet 10.99.0 --endpoint 192.168.0.141 --first-client vmclient`) | service `active` + `enabled`, UDP 443 bound (v4 and v6), `awg_nat` loaded, `ip_forward=1` |
+| File modes | dir 700, `awg0.conf`/`srv.key`/client files 600, README 644 |
+| Tunnel traffic (client in a netns) | handshake, ping 10.99.0.1, ping 1.1.1.1 via NAT, HTTP 301 through the tunnel |
+| Reboot | service auto-started, `awg_nat` present, traffic worked again |
+| `update.sh --force` (healthy) | restart + `Done.`, exit 0 |
+| `update.sh --force` with a broken `amneziawg-go` | restart failed, files restored (hash equal), old version restarted, exit 1 |
+| `update.sh --check` | exit 0, config/binary mtimes and hashes unchanged |
+| ufw active (non-English-safe status) | installer added `443/udp` and `route allow in on awg0 out on enp0s3`; traffic still passed |
+| `protocol 1.5` | `awg0.conf` hash and `ActiveEnterTimestamp` unchanged, client got `I1`, no restart |
+| `protocol 2.0` then `1.0` | restart, `S3/S4` + H ranges, reissued client config carried traffic |
+| Kill `amneziawg-go` | **`systemctl is-active` still `active`, `awg show` failed, interface and UDP port gone, no auto-restart**; `update.sh` refused with "active but not usable" and left binaries unchanged; manual `systemctl restart` recovered |
+
+Not executed: Docker/iptables-nft and firewalld composition, `nft -f` twice, `systemctl restart
+nftables` with the default `flush ruleset`, a dual-stack IPv6 client, and the uninstall/keep-config
+cycle on this VM.
+
 
 ## Baseline
 
