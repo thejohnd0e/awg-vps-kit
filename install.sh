@@ -36,6 +36,10 @@ need_value() {  # need_value "$@" within an option branch
 valid_subnet() {
   local re='^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$' a b c
   [[ "$1" =~ $re ]] || return 1
+  for a in "${BASH_REMATCH[@]:1}"; do
+    # leading zeros may be rejected by the kernel/nftables: require canonical octets
+    [ "$a" = 0 ] || [[ "$a" != 0* ]] || return 1
+  done
   a=$((10#${BASH_REMATCH[1]})); b=$((10#${BASH_REMATCH[2]})); c=$((10#${BASH_REMATCH[3]}))
   [ "$a" -le 255 ] && [ "$b" -le 255 ] && [ "$c" -le 255 ]
 }
@@ -62,7 +66,8 @@ done
 [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || die "--port must be a number (1-65535)"
 PORT=$((10#$PORT))
 { [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ]; } || die "--port must be 1-65535"
-valid_subnet "$SUBNET" || die "--subnet must look like 10.79.0 (each part 0-255)"
+valid_subnet "$SUBNET" || die "--subnet must look like 10.79.0 (each part 0-255, no leading zeros)"
+[ -z "$PROTOCOL" ] || case "$PROTOCOL" in 1.0|1.5|2.0) ;; *) die "--protocol must be 1.0, 1.5 or 2.0" ;; esac
 
 # Started through `curl ... | bash` or with a lone script file: no kit checkout next to this
 # script, so fetch the kit into /opt/awg-vps-kit (or fast-forward the clone there) and continue
@@ -240,8 +245,8 @@ if [ "$PROTOCOL" = 2.0 ]; then
   H=("${R[0]}-${R[1]}" "${R[2]}-${R[3]}" "${R[4]}-${R[5]}" "${R[6]}-${R[7]}")
 fi
 
-mkdir -p "$DIR/clients"
-chmod 700 "$DIR" "$DIR/clients"
+mkdir -p "$DIR/clients" "$DIR/transactions"
+chmod 700 "$DIR" "$DIR/clients" "$DIR/transactions"
 ( umask 077
   awg genkey > "$DIR/srv.key"
   awg pubkey < "$DIR/srv.key" > "$DIR/srv.pub"
@@ -300,6 +305,7 @@ install -m 644 "$HERE/README.md" "$DIR/README.md"
 
 if [ "$NO_SERVICE" = 1 ]; then
   log "Files written (--no-service): $DIR"
+  [ -z "$FIRST" ] || echo "warning: --first-client is ignored with --no-service" >&2
 else
   log "Enabling IP forwarding"
   printf '%s\n' 'net.ipv4.ip_forward=1' > /etc/sysctl.d/99-awg.conf
@@ -339,10 +345,9 @@ EOF
   systemctl start "awg-quick@$IF" || true
   sleep 2
   systemctl is-active "awg-quick@$IF" >/dev/null || { journalctl -u "awg-quick@$IF" -n 30 --no-pager; die "service did not start (config left in $DIR: remove it before re-running)"; }
-  awg show "$IF" | head -5
-fi
+  awg show "$IF" | sed -n '1,5p'
 
-cat <<EOF
+  cat <<EOF
 
 AmneziaWG server is ready.
   Address:  $ENDPOINT:$PORT/udp   tunnel $SUBNET.0/24   protocol $PROTOCOL   NAT via $WAN_IF
@@ -350,6 +355,7 @@ AmneziaWG server is ready.
   Help:     awg-client help      (full notes: $DIR/README.md)
 If the provider has an external firewall / security group, open UDP $PORT there.
 EOF
+fi
 
 if [ -n "$FIRST" ] && [ "$NO_SERVICE" = 0 ]; then
   log "Creating first client: $FIRST"

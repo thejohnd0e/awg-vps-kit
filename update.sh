@@ -91,6 +91,12 @@ take_lock() {  # serialise every operation that reads and writes installed state
 # --check only reads installed state and must not be blocked by (or block) a real update.
 [ "$CHECK" = 1 ] || take_lock
 
+# An unfinished peer/protocol/update transaction is the only copy of the old state.
+if [ "$CHECK" = 0 ]; then
+  pending=$(find "$DIR/transactions" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null || true)
+  [ -z "$pending" ] || die "unfinished operation at $pending; resolve it before updating"
+fi
+
 installed() { awk -F= -v k="$1" '$1==k{print $2}' "$DIR/versions" 2>/dev/null || true; }
 upstream() { git ls-remote "$1" HEAD 2>/dev/null | cut -f1; }
 # scripts, docs and the recorded kit version always follow the checkout
@@ -175,14 +181,15 @@ runtime_healthy() {  # local liveness, not proof that traffic flows
 }
 
 restart=0
-if [ "$NO_RESTART" = 0 ] && command -v systemctl >/dev/null \
-   && systemctl is-active --quiet "awg-quick@$IF"; then
+if [ "$NO_RESTART" = 0 ]; then
+  command -v systemctl >/dev/null || die "systemctl is not available; pass --no-restart (the runtime will not be verified)"
+  systemctl is-active --quiet "awg-quick@$IF" \
+    || die "awg-quick@$IF is not active; restore the service first, or pass --no-restart (the runtime will not be verified)"
+  # is-active is not health: replacing binaries under a broken interface hides the failure
+  # until the restart, when the rollback would have to guess which side broke it.
+  runtime_healthy \
+    || die "awg-quick@$IF is active but not usable (awg show $IF failed); fix it first, or pass --no-restart"
   restart=1
-fi
-# is-active is not health: replacing binaries under a broken interface hides the failure
-# until the restart, when the rollback would have to guess which side broke it.
-if [ "$restart" = 1 ] && ! runtime_healthy; then
-  die "awg-quick@$IF is active but not usable (awg show $IF failed); fix it first, or pass --no-restart"
 fi
 
 managed_files() {
@@ -199,6 +206,7 @@ snapshot_state() {  # snapshot_state <txn>: remember the current, self-consisten
 }
 restore_state() {  # restore_state <txn>: files that did not exist before are removed again
   local txn=$1 f failed=0
+  [ -r "$txn/manifest" ] || { echo "error: $txn/manifest is missing; refusing to guess what to restore" >&2; return 1; }
   while IFS= read -r f; do
     cp -p "$txn/files/$(basename "$f")" "$f" || failed=1
   done < "$txn/manifest"
@@ -216,7 +224,11 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
     bash "$HERE/install.sh" --build-only "$BIN_DIR" >/dev/null
   fi
   for f in amneziawg-go awg awg-quick; do [ -x "$BIN_DIR/$f" ] || die "missing $BIN_DIR/$f"; done
+  # the build took minutes: the service may have died meanwhile
+  [ "$restart" = 0 ] || systemctl is-active --quiet "awg-quick@$IF" \
+    || die "awg-quick@$IF stopped while the update was being prepared; nothing was replaced"
 
+  mkdir -p "$DIR/transactions"; chmod 700 "$DIR/transactions"
   txn=$(mktemp -d "$DIR/transactions/update.XXXXXX"); chmod 700 "$txn"
   snapshot_state "$txn"
   mkdir -p "$txn/new"
@@ -280,7 +292,7 @@ if [ "$replaced" = 1 ] && [ "$restart" = 1 ]; then
   systemctl restart "awg-quick@$IF" || rollback_update "the service did not restart"
   sleep 2
   runtime_healthy || { journalctl -u "awg-quick@$IF" -n 30 --no-pager; rollback_update "the tunnel is not usable after the restart"; }
-  awg show "$IF" | head -3
+  awg show "$IF" | sed -n '1,3p'
 elif [ "$replaced" = 1 ]; then
   echo "New binaries are installed, runtime not verified (no restart was requested or the service is stopped)."
   echo "Apply with: systemctl restart awg-quick@$IF"
@@ -289,7 +301,10 @@ fi
 if [ "$replaced" = 1 ]; then
   # keep the previous, self-consistent set (binaries and the metadata that describes them)
   mkdir -p /opt/amneziawg/prev
-  cp -p "$txn/files/"* /opt/amneziawg/prev/ 2>/dev/null || true
-  rm -rf "$txn"
+  if cp -p "$txn/files/"* /opt/amneziawg/prev/ 2>/dev/null; then
+    rm -rf "$txn"
+  else
+    echo "warning: could not refresh /opt/amneziawg/prev; the previous set is kept in $txn" >&2
+  fi
 fi
 echo "Done."

@@ -6,10 +6,10 @@
 ROOT=${ROOT:?ROOT must point at the repository root}
 DIR=/etc/amnezia/amneziawg
 IF=awg0
-# shellcheck disable=SC2034  # CONF is used by the sourcing test script
+# shellcheck disable=SC2034  # CL and CONF are used by the sourcing test script
+CL=$DIR/clients
+# shellcheck disable=SC2034
 CONF=$DIR/$IF.conf
-STUB_DIR=${STUB_DIR:-/usr/local/bin}
-BARRIER=${BARRIER:-/tmp/awg-test-barrier}
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "ok: $*"; }
@@ -70,5 +70,42 @@ esac
 EOS
   chmod 755 /tmp/awg-test-bin/systemctl
   PATH=/tmp/awg-test-bin:$PATH
+  export PATH
+}
+
+# git stub for `ls-remote`: reports the installed commits, so update tests stay offline.
+stub_git_version() {
+  mkdir -p /tmp/awg-test-git
+  cat > /tmp/awg-test-git/git <<'EOS'
+#!/bin/sh
+case "$1" in
+  ls-remote)
+    case "$2" in
+      *amneziawg-go) sed -n 's/^amneziawg-go=//p' /etc/amnezia/amneziawg/versions ;;
+      *amneziawg-tools) sed -n 's/^amneziawg-tools=//p' /etc/amnezia/amneziawg/versions ;;
+      *) echo 0000000000000000000000000000000000000000 ;;
+    esac
+    exit 0 ;;
+esac
+exec /usr/bin/git "$@"
+EOS
+  chmod 755 /tmp/awg-test-git/git
+  PATH=/tmp/awg-test-git:$PATH
+  export PATH
+}
+
+# mv stub that fails when the destination contains MV_FAIL_ON (publish failure injection).
+stub_mv_fail() {
+  mkdir -p /tmp/awg-test-mv
+  cat > /tmp/awg-test-mv/mv <<'EOS'
+#!/bin/sh
+for a in "$@"; do last=$a; done
+case "$last" in *"$MV_FAIL_ON"*) echo "stub: mv refused" >&2; exit 1 ;; esac
+exec /usr/bin/mv "$@"
+EOS
+  chmod 755 /tmp/awg-test-mv/mv
+  MV_FAIL_ON=$1
+  export MV_FAIL_ON
+  PATH=/tmp/awg-test-mv:$PATH
   export PATH
 }

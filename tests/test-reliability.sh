@@ -49,6 +49,12 @@ case_cli() {
   if "$ROOT/install.sh" --no-service --subnet 999.1.1 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null 2>&1; then
     fail "subnet 999.1.1 must be rejected"
   fi
+  if "$ROOT/install.sh" --no-service --subnet 010.79.0 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null 2>&1; then
+    fail "subnet with leading zeros must be rejected"
+  fi
+  if "$ROOT/install.sh" --no-service --protocol 3.0 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null 2>&1; then
+    fail "invalid --protocol must be rejected"
+  fi
 
   out=$("$ROOT/install.sh" --help)
   echo "$out" | grep -q -- '--allow-outdated' || fail "install.sh --help drops --allow-outdated"
@@ -69,6 +75,14 @@ case_cli() {
   for f in srv.pub protocol endpoint nat-up.nft README.md; do
     [ "$(stat -c %a "$DIR/$f")" = 644 ] || fail "$f must be mode 644 (got $(stat -c %a "$DIR/$f"))"
   done
+
+  # Boundary values are accepted and used as-is.
+  rm -rf "$DIR"
+  "$ROOT/install.sh" --no-service --port 65535 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
+  grep -q '^ListenPort = 65535$' "$CONF" || fail "port 65535 was not accepted"
+  rm -rf "$DIR"
+  "$ROOT/install.sh" --no-service --port 1 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
+  grep -q '^ListenPort = 1$' "$CONF" || fail "port 1 was not accepted"
   ok "cli: values, ranges, help, IPv6 endpoint and file modes"
 }
 
@@ -86,10 +100,11 @@ case_bootstrap() {
   assert_missing /opt/awg-vps-kit "piped invalid options must not clone the kit"
 
   set +e
-  ( cd "$tmp" && bash -s -- --check < "$ROOT/update.sh" >/dev/null 2>&1 )
+  out=$( ( cd "$tmp" && bash -s -- --check < "$ROOT/update.sh" ) 2>&1 )
   local rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "update.sh --check without a kit checkout must fail"
+  case "$out" in *"no kit checkout"*) ;; *) fail "update.sh --check must say there is no kit checkout (got: $out)" ;; esac
   assert_missing /opt/awg-vps-kit "update.sh --check must not clone the kit"
   rm -rf "$tmp"
   ok "bootstrap: stdin runs and read-only check"
@@ -161,7 +176,38 @@ EOS
   if "$ROOT/awg-client" add afterkill >/dev/null 2>&1; then fail "add must refuse while a peer transaction is unfinished"; fi
   rm -rf "$DIR/transactions"
   stub_awg
-  ok "peers: runtime guard, rollback, SIGKILL block"
+  # Failure after the runtime change: publishing the client config fails, so the peer
+  # and awg0.conf must be rolled back.
+  local pbefore saved; pbefore=$(sha256sum "$CONF" | cut -d' ' -f1); saved=$PATH
+  stub_mv_fail "/clients/crashv.conf"
+  if "$ROOT/awg-client" add crashv >/dev/null 2>&1; then
+    fail "add must fail when publishing the client config fails"
+  fi
+  PATH=$saved
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$pbefore" ] || fail "failed publish must restore awg0.conf"
+  assert_missing "$CL/crashv.conf" "failed publish must not leave client files"
+  assert_missing "$CL/crashv.key" "failed publish must not leave key files"
+  ls -d "$DIR"/transactions/peer.* >/dev/null 2>&1 && fail "clean rollback must remove the peer transaction"
+
+  # SIGTERM in the middle of awg set: the peer must be removed, not left half-created.
+  export AWG_STUB_BARRIER=/tmp/awg-term-barrier
+  rm -f "$AWG_STUB_BARRIER" "$AWG_STUB_BARRIER.ready"
+  "$ROOT/awg-client" add termsig >/dev/null 2>&1 & local tp=$!
+  local i=0; while [ ! -e "${AWG_STUB_BARRIER}.ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+  : > "$AWG_STUB_BARRIER"
+  kill -TERM $tp
+  local trc=0; wait $tp || trc=$?
+  unset AWG_STUB_BARRIER
+  assert_status 130 "$trc" "SIGTERM must exit 130"
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$pbefore" ] || fail "SIGTERM must leave awg0.conf unchanged"
+  assert_missing "$CL/termsig.conf" "interrupted add must not leave client files"
+  ls -d "$DIR"/transactions/peer.* >/dev/null 2>&1 && fail "clean SIGTERM rollback must remove the transaction"
+
+  # An unfinished transaction blocks the next change until it is resolved.
+  mkdir -p "$DIR/transactions/peer.test"
+  if "$ROOT/awg-client" add pendingx >/dev/null 2>&1; then fail "unfinished transaction must block add"; fi
+  rm -rf "$DIR/transactions/peer.test"
+  ok "peers: runtime guard, rollback, publish failure, SIGTERM, SIGKILL block"
 }
 
 case_protocol() {
@@ -214,30 +260,50 @@ case_update() {
   echo "# update"
   fresh_install
   stub_awg
+  stub_git_version
   stub_systemctl
+  # First update on a fresh install, before any awg-client call: nothing but install.sh
+  # has created /etc/amnezia/amneziawg so far.
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null || fail "update must work on a fresh install"
+  stub_awg   # the update replaced the stubbed awg with the real binary
+
   "$ROOT/awg-client" add carol >/dev/null
-  local before out; before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  local before out mtime; before=$(sha256sum "$CONF" | cut -d' ' -f1)
   out=$("$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart)
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "update must not touch awg0.conf"
   "$ROOT/awg-client" list | grep -q carol || fail "clients lost after update"
   echo "$out" | grep -q 'runtime not verified' || fail "--no-restart must say the runtime was not verified"
 
   # is-active alone is not health: a broken interface must stop the update before replacing files.
-  local hash; hash=$(sha256sum /usr/local/bin/awg | cut -d' ' -f1)
+  mtime=$(stat -c %y /usr/local/bin/awg)
   if SYSTEMCTL_ACTIVE=1 AWG_STUB_SHOW_FAIL=1 "$ROOT/update.sh" --force --bin-dir "$BIN" >/dev/null 2>&1; then
     fail "update must refuse an active service whose interface is unusable"
   fi
-  [ "$(sha256sum /usr/local/bin/awg | cut -d' ' -f1)" = "$hash" ] || fail "refused update must not replace binaries"
+  [ "$(stat -c %y /usr/local/bin/awg)" = "$mtime" ] || fail "refused update must not replace binaries"
+
+  # A stopped service is not an implicit --no-restart.
+  if SYSTEMCTL_ACTIVE=0 "$ROOT/update.sh" --force --bin-dir "$BIN" >/dev/null 2>&1; then
+    fail "update must refuse a stopped service without --no-restart"
+  fi
+  [ "$(stat -c %y /usr/local/bin/awg)" = "$mtime" ] || fail "stopped-service refusal must not replace binaries"
+
+  # An unfinished transaction is the only copy of the old state: no second update.
+  mkdir -p "$DIR/transactions/update.test"
+  if "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null 2>&1; then
+    fail "update must refuse while an unfinished operation exists"
+  fi
+  rm -rf "$DIR/transactions/update.test"
 
   # A failed restart must restore the previous binaries and metadata.
+  mtime=$(stat -c %y /usr/local/bin/awg)
   local vhash; vhash=$(sha256sum "$DIR/versions" | cut -d' ' -f1)
   if SYSTEMCTL_ACTIVE=1 SYSTEMCTL_RESTART_FAIL=1 "$ROOT/update.sh" --force --bin-dir "$BIN" >/dev/null 2>&1; then
     fail "a failed restart must fail the update"
   fi
-  [ "$(sha256sum /usr/local/bin/awg | cut -d' ' -f1)" = "$hash" ] || fail "failed update must restore the previous binaries"
+  [ "$(stat -c %y /usr/local/bin/awg)" = "$mtime" ] || fail "failed update must restore the previous binaries"
   [ "$(sha256sum "$DIR/versions" | cut -d' ' -f1)" = "$vhash" ] || fail "failed update must restore versions"
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed update must not touch awg0.conf"
-  ok "update: binaries, health gate, rollback, no-restart wording"
+  ok "update: fresh install, health gate, stopped service, pending block, rollback"
 }
 
 case_lock() {
@@ -269,6 +335,18 @@ case_lock() {
   [ "$rc" -ne 0 ] || fail "add must fail while another operation holds the lock"
   case "$out" in *"another kit operation is running"*) ;; *) fail "lock timeout message missing (got: $out)" ;; esac
   assert_missing "$DIR/clients/blocked.conf" "a blocked add must not write client files"
+
+  # update and uninstall take the same lock; hold it longer than both timeouts
+  flock "$hold" -c 'sleep 25' & hp=$!
+  sleep 0.3
+  if "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null 2>&1; then
+    fail "update must respect the kit lock"
+  fi
+  if "$ROOT/uninstall.sh" --yes >/dev/null 2>&1; then
+    fail "uninstall must respect the kit lock"
+  fi
+  wait $hp || true
+  [ -d "$DIR" ] || fail "a blocked uninstall must not remove /etc/amnezia"
 
   "$ROOT/awg-client" add lock1 >/dev/null & local p1=$!
   "$ROOT/awg-client" add lock2 >/dev/null & local p2=$!
