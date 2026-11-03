@@ -34,6 +34,8 @@ Notes:
   - Removing a client disconnects that device immediately.
   - `protocol 2.0` rewrites the server obfuscation fields and restarts the tunnel: every client
     must then get its new config (`awg-client show <name>`), old configs stop working.
+  - Switching only between 1.0 and 1.5 keeps the server fields: no restart, existing clients keep
+    working; new configs get the I1-I5 fields for 1.5.
   - If a peer operation was interrupted, /etc/amnezia/amneziawg/transactions/peer.* stays
     behind and further changes are refused: check awg0.conf, then remove that directory.
   - Details: /etc/amnezia/amneziawg/README.md
@@ -91,6 +93,7 @@ print_conf() { echo "$SEP"; cat "$CL/$1.conf"; echo "$SEP"; qr "$CL/$1.conf"; }
 extra_fields() {  # protocol-specific lines (S3/S4 from the server config, I1 from the protocol file)
   local k v
   for k in S3 S4; do v=$(iface_val "$k"); [ -z "$v" ] || echo "$k = $v"; done
+  [ "$(kv "$DIR/protocol" protocol)" = 1.5 ] || return 0
   for k in I1 I2 I3 I4 I5; do v=$(kv "$DIR/protocol" "$k"); [ -z "$v" ] || echo "$k = $v"; done
 }
 gen_conf() { gen_conf_raw "$@" | sed '/^H4 = /{n;/^$/d}'; }
@@ -150,8 +153,8 @@ require_runtime() {
 }
 pending_txn() {
   local p
-  p=$(find "$TXN_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'peer.*' -print -quit 2>/dev/null || true)
-  [ -z "$p" ] || die "unfinished peer operation at $p; check $CONF, then remove that directory"
+  p=$(find "$TXN_ROOT" -mindepth 1 -maxdepth 1 -type d \( -name 'peer.*' -o -name 'protocol.*' \) -print -quit 2>/dev/null || true)
+  [ -z "$p" ] || die "unfinished operation at $p; check $CONF, then remove that directory"
 }
 begin_txn() {  # begin_txn <add|remove> <name> <pub> <ip> [psk-path]
   KIND=$1; TNAME=$2; TPUB=$3; TIP=$4; TPSK=${5:-}
@@ -200,6 +203,23 @@ on_signal() {
 }
 trap on_signal INT TERM
 
+list_names() { awk '/^\[Peer\]/{p=1;n="";next} p&&/^# /{n=substr($0,3)} p&&/^AllowedIPs/{print n; p=0}' "$CONF"; }
+make_protocol_file() {  # make_protocol_file <version> <source> <dest>: keep every other key
+  local ver=$1 src=$2 dst=$3 seen=0 line
+  : > "$dst"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      protocol=*) seen=1; printf 'protocol=%s\n' "$ver" >> "$dst" ;;
+      '') ;;
+      *) printf '%s\n' "$line" >> "$dst" ;;
+    esac
+  done < "$src"
+  [ "$seen" = 1 ] || printf 'protocol=%s\n' "$ver" >> "$dst"
+  if [ "$ver" = 1.5 ] && ! grep -q '^I1=' "$dst"; then
+    echo 'I1=<b 0xc00000000108><r 8><b 0x00><r 64>' >> "$dst"
+  fi
+}
+
 case "$cmd" in
   list)
     awk '/^\[Peer\]/{p=1;n="";next} p&&/^# /{n=substr($0,3)} p&&/^AllowedIPs/{print $3"\t"n; p=0}' "$CONF" | sort -V
@@ -220,23 +240,65 @@ case "$cmd" in
     [ -n "$name" ] || { echo "$cur"; exit 0; }
     case "$name" in 1.0|1.5|2.0) ;; *) echo "protocol must be 1.0, 1.5 or 2.0" >&2; exit 1 ;; esac
     take_lock
+    pending_txn
     [ "$name" != "$cur" ] || { echo "protocol is already $cur"; exit 0; }
-    cp "$CONF" "$CONF.bak-protocol-$cur"
-    protocol_fields "$name" > "$CONF.fields"
+
+    pt=$(mktemp -d "$TXN_ROOT/protocol.XXXXXX"); chmod 700 "$pt"
+    cp -p "$CONF" "$pt/old.conf"
+    cp -p "$DIR/protocol" "$pt/old.protocol"
+
+    # 1.0 <-> 1.5 changes client-side metadata only: the server fields are identical,
+    # so rewriting awg0.conf or restarting the tunnel would disconnect every client
+    # for nothing. Custom I1..I5 are kept; they are exported only while the protocol is 1.5.
+    case "$cur:$name" in
+      1.0:1.5|1.5:1.0)
+        if make_protocol_file "$name" "$pt/old.protocol" "$pt/protocol" \
+           && mv -f "$pt/protocol" "$DIR/protocol"; then
+          rm -rf "$pt"
+          echo "protocol $cur -> $name (server fields unchanged, no restart)"
+          echo "Clients get the I1..I5 fields for 1.5: awg-client show <name>"
+          exit 0
+        fi
+        rm -rf "$pt"
+        die "cannot write $DIR/protocol" ;;
+    esac
+
+    backup="$CONF.bak-protocol-$cur.$(date +%Y%m%d-%H%M%S)"
+    protocol_fields "$name" > "$pt/fields"
     # the new fields replace S3/S4/H1-H4 in the [Interface] section, right after S2
-    awk -v f="$CONF.fields" '/^\[Peer\]/{p=1} !p&&/^(S3|S4|H[1-4]) =/{next} {print} !p&&/^S2 =/{while((getline l<f)>0)print l}' "$CONF" > "$CONF.tmp"
-    mv "$CONF.tmp" "$CONF"; rm -f "$CONF.fields"
-    {
-      echo "protocol=$name"
-      [ "$name" != 1.5 ] || echo "I1=<b 0xc00000000108><r 8><b 0x00><r 64>"
-    } > "$DIR/protocol"
-    echo "protocol $cur -> $name (backup: $CONF.bak-protocol-$cur)"
+    awk -v f="$pt/fields" '/^\[Peer\]/{p=1} !p&&/^(S3|S4|H[1-4]) =/{next} {print} !p&&/^S2 =/{while((getline l<f)>0)print l}' "$CONF" > "$pt/new.conf"
+    make_protocol_file "$name" "$pt/old.protocol" "$pt/protocol"
+    if ! mv -f "$pt/new.conf" "$CONF"; then rm -rf "$pt"; die "cannot write $CONF"; fi
+    if ! mv -f "$pt/protocol" "$DIR/protocol"; then
+      cp -p "$pt/old.conf" "$CONF"; rm -rf "$pt"; die "cannot write $DIR/protocol; $CONF restored"
+    fi
+    cp -p "$pt/old.conf" "$backup"
+    cp -p "$pt/old.protocol" "$DIR/protocol.bak-$cur.$(date +%Y%m%d-%H%M%S)"
+
     if systemctl is-active --quiet "awg-quick@$IF" 2>/dev/null; then
-      systemctl restart "awg-quick@$IF"; echo "tunnel restarted; all clients are offline until they get the new config"
+      if systemctl restart "awg-quick@$IF"; then
+        rm -rf "$pt"
+        echo "protocol $cur -> $name (backup: $backup)"
+        echo "tunnel restarted; all clients are offline until they get the new config"
+      else
+        cp -p "$pt/old.conf" "$CONF"
+        cp -p "$pt/old.protocol" "$DIR/protocol"
+        if systemctl restart "awg-quick@$IF"; then
+          rm -rf "$pt"
+          die "restart with $name failed; restored $cur and the tunnel is up again"
+        fi
+        rm -rf "$pt"
+        echo "error: restart with $name failed and $cur did not start either" >&2
+        echo "files are restored to $cur; recovery: systemctl restart awg-quick@$IF" >&2
+        exit 1
+      fi
     else
+      rm -rf "$pt"
+      echo "protocol $cur -> $name (backup: $backup)"
       echo "tunnel is not running as a service: restart it to apply"
     fi
-    echo "New configs: awg-client show <name> for:"; "$0" list | cut -f2 | sed 's/^/  /'
+    echo "New configs: awg-client show <name> for:"
+    list_names | sed 's/^/  /'
     exit 0 ;;
   remove)
     valid "$name"

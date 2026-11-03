@@ -168,17 +168,46 @@ case_protocol() {
   echo "# protocol"
   fresh_install
   stub_awg
+  stub_systemctl
+  local log=/tmp/awg-systemctl.log
+  : > "$log"
   "$ROOT/awg-client" add erin >/dev/null
-  local before; before=$(sha256sum "$CONF" | cut -d' ' -f1)
-  printf 'I1 = <b 0xc00000000108><b 0x42>\nI2 = keep=this\n' >> "$DIR/protocol"
-  SYSTEMCTL_LOG=/tmp/awg-systemctl.log
-  : > "$SYSTEMCTL_LOG"
-  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$SYSTEMCTL_LOG PATH=/tmp/awg-test-bin:$PATH "$ROOT/awg-client" protocol 1.5 >/dev/null
+  local before out; before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  # key=value file format; custom I-signatures must survive every transition
+  printf 'I1=<b 0xc00000000108><b 0x42>\nI2=keep=this\n' >> "$DIR/protocol"
+
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 1.5 >/dev/null
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "1.0 -> 1.5 must not rewrite awg0.conf"
-  if grep -q restart "$SYSTEMCTL_LOG"; then fail "1.0 -> 1.5 must not restart the tunnel"; fi
-  local out; out=$("$ROOT/awg-client" show erin)
+  if grep -q restart "$log"; then fail "1.0 -> 1.5 must not restart the tunnel"; fi
+  out=$("$ROOT/awg-client" show erin)
   echo "$out" | grep -q '^I2 = keep=this$' || fail "custom I2 was not preserved"
-  ok "protocol: 1.0 -> 1.5 keeps the server config and custom fields"
+  echo "$out" | grep -q '^I1 = <b 0xc00000000108><b 0x42>$' || fail "custom I1 was overwritten"
+
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 1.0 >/dev/null
+  out=$("$ROOT/awg-client" show erin)
+  if echo "$out" | grep -Eq '^I[1-5] = '; then fail "1.0 clients must not get I-signature fields"; fi
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "1.5 -> 1.0 must not rewrite awg0.conf"
+  "$ROOT/awg-client" protocol 1.5 >/dev/null
+  out=$("$ROOT/awg-client" show erin)
+  echo "$out" | grep -q '^I1 = <b 0xc00000000108><b 0x42>$' || fail "returning to 1.5 lost the custom I1"
+
+  : > "$log"
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 2.0 >/dev/null
+  grep -q '^S3 = ' "$CONF" || fail "2.0 must add S3 to awg0.conf"
+  grep -q restart "$log" || fail "2.0 must restart the tunnel"
+  out=$("$ROOT/awg-client" show erin)
+  echo "$out" | grep -Eq '^H1 = [0-9]+-[0-9]+$' || fail "2.0 client H1 is not a range"
+  if echo "$out" | grep -Eq '^I[1-5] = '; then fail "2.0 clients must not get 1.5 I-signatures"; fi
+
+  # A failed restart must leave the previous protocol and config in place.
+  before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  if SYSTEMCTL_ACTIVE=1 SYSTEMCTL_RESTART_FAIL=1 SYSTEMCTL_LOG=$log \
+     "$ROOT/awg-client" protocol 1.0 >/dev/null 2>&1; then
+    fail "a failed restart must fail the protocol change"
+  fi
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed protocol change must restore awg0.conf"
+  [ "$("$ROOT/awg-client" protocol)" = 2.0 ] || fail "failed protocol change must keep protocol 2.0"
+  ok "protocol: metadata-only switches, custom fields, failed restart rollback"
 }
 
 case_update() {

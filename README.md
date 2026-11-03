@@ -142,10 +142,13 @@ awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 (wi
   a ZeroBlock section of type `vpn` with that interface.
 
 **Changing the protocol of a running server:** `awg-client protocol 2.0` (or `1.5`, `1.0`) rewrites the
-`S3/S4/H1-H4` fields of `awg0.conf` (backup `awg0.conf.bak-protocol-<old>`), keeps the keys, address
-plan and every client, and restarts the tunnel. All clients are offline until each gets its new
-config (`awg-client show <name>`); the old configs stop working. The version does not change speed
-(measured: 1.0, 1.5 and 2.0 give the same throughput within the noise).
+`S3/S4/H1-H4` fields of `awg0.conf` (backup `awg0.conf.bak-protocol-<old>.<timestamp>`), keeps the keys,
+address plan and every client, and restarts the tunnel. All clients are offline until each gets its new
+config (`awg-client show <name>`); the old configs stop working. Switching only between `1.0` and `1.5`
+changes client-side data: the server fields are identical, so `awg0.conf` is not rewritten, the tunnel is
+not restarted and existing clients keep working; `awg-client show` then adds the `I1`-`I5` fields (or
+leaves them out for 1.0). Custom `I1`-`I5` values in `protocol` are preserved. The version does not change
+speed (measured: 1.0, 1.5 and 2.0 give the same throughput within the noise).
 
 The obfuscation parameters must be identical on server and client; `awg-client` copies
 them from `awg0.conf` (and `I1` from `protocol`). Do not change them on a server that has clients unless you
