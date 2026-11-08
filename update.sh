@@ -77,6 +77,7 @@ DIR=/etc/amnezia/amneziawg
 IF=awg0
 UP_GO=https://github.com/amnezia-vpn/amneziawg-go
 UP_TOOLS=https://github.com/amnezia-vpn/amneziawg-tools
+TUNNEL_UNIT=/etc/systemd/system/awg-quick@.service
 
 [ "$(id -u)" = 0 ] || die "run as root"
 [ -f "$DIR/$IF.conf" ] || die "$DIR/$IF.conf not found: nothing installed here (use install.sh)"
@@ -112,10 +113,20 @@ refresh_scripts() {
   # Migration for servers installed before the watchdog existed: create/repair the
   # units and start the timer. Only the units this kit owns are touched.
   if command -v systemctl >/dev/null 2>&1; then
+    # the tunnel unit only where install.sh created it (not on --no-service installs);
+    # a changed ExecStart applies at the next restart
+    [ ! -e "$TUNNEL_UNIT" ] || install -m 644 "$HERE/awg-quick@.service" "$TUNNEL_UNIT" 2>/dev/null || true
     install -m 644 "$HERE/awg-watchdog.service" "$HERE/awg-watchdog.timer" /etc/systemd/system/ 2>/dev/null || true
     systemctl daemon-reload 2>/dev/null || true
     systemctl enable --now awg-watchdog.timer >/dev/null 2>&1 || true
   fi
+}
+
+prune_backups() {  # prune_backups <path-prefix>: keep the 5 newest "<prefix>*<YYYYmmdd-HHMMSS>" files (as in awg-client)
+  local f
+  find "$(dirname "$1")" -maxdepth 1 -type f -name "$(basename "$1")*" 2>/dev/null \
+    | sed -n 's/.*\([0-9]\{8\}-[0-9]\{6\}\)$/\1 &/p' | sort -r | tail -n +6 | cut -d' ' -f2- \
+    | while IFS= read -r f; do rm -f -- "$f"; done
 }
 
 # Server config migrations for installations created by older kits. Idempotent and
@@ -126,11 +137,34 @@ apply_migrations() {
     { printf 'table ip awg_nat\n'; printf 'delete table ip awg_nat\n'; cat "$nat"; } > "$nat.new" \
       && mv -f "$nat.new" "$nat"
   fi
+  # MSS clamping for the 1280 MTU of the server interface (see install.sh): put the rules in
+  # front of the first accept of the forward chain, and apply them to a running tunnel too.
+  if [ -f "$nat" ] && ! grep -q 'tcp option maxseg' "$nat" && grep -qx "    iifname \"$IF\" accept" "$nat"; then
+    ts=$(date +%Y%m%d-%H%M%S)
+    cp -p "$nat" "$nat.bak-update-$ts"
+    awk -v i="$IF" '
+      $0 == "    iifname \"" i "\" accept" && !done {
+        print "    # MSS clamping for the 1280 MTU of " i " (1280 - 40 bytes of IPv4+TCP headers): clients use"
+        print "    # a larger MTU (1420), so without this they advertise an MSS that does not fit the tunnel."
+        print "    iifname \"" i "\" tcp flags syn tcp option maxseg size > 1240 tcp option maxseg size set 1240"
+        print "    oifname \"" i "\" tcp flags syn tcp option maxseg size > 1240 tcp option maxseg size set 1240"
+        done = 1
+      }
+      { print }' "$nat" > "$nat.new" && mv -f "$nat.new" "$nat" && chmod 644 "$nat"
+    if command -v nft >/dev/null 2>&1 && nft list table ip awg_nat >/dev/null 2>&1; then
+      if ! nft -f "$nat"; then
+        echo "warning: the new NAT rules did not load; restoring the previous nat-up.nft" >&2
+        cp -p "$nat.bak-update-$ts" "$nat"; nft -f "$nat" || true
+      fi
+    fi
+    prune_backups "$nat.bak-update-"
+  fi
   if [ -f "$conf" ] && grep -qx 'PostDown = nft delete table ip awg_nat' "$conf"; then
     ts=$(date +%Y%m%d-%H%M%S)
     cp -p "$conf" "$conf.bak-update-$ts"
     sed -i 's#^PostDown = nft delete table ip awg_nat$#PostDown = nft delete table ip awg_nat 2>/dev/null || true#' "$conf"
     chmod 600 "$conf"
+    prune_backups "$conf.bak-update-"
   fi
 }
 
@@ -222,7 +256,7 @@ fi
 managed_files() {
   printf '%s\n' /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg-quick \
     /usr/local/bin/awg-client /usr/local/bin/awg-watchdog /usr/local/bin/block-ping \
-    /etc/systemd/system/awg-watchdog.service /etc/systemd/system/awg-watchdog.timer \
+    /etc/systemd/system/awg-watchdog.service /etc/systemd/system/awg-watchdog.timer "$TUNNEL_UNIT" \
     "$DIR/versions" "$DIR/kit-version" "$DIR/README.md"
 }
 snapshot_state() {  # snapshot_state <txn>: remember the current, self-consistent set
@@ -242,6 +276,7 @@ restore_state() {  # restore_state <txn>: files that did not exist before are re
   while IFS= read -r f; do
     grep -qxF "$f" "$txn/manifest" || rm -f "$f" || failed=1
   done < <(managed_files)
+  if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload 2>/dev/null || true; fi
   return "$failed"
 }
 
@@ -276,6 +311,7 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
   install -m 755 "$HERE/block-ping" "$txn/new/block-ping"
   install -m 644 "$HERE/awg-watchdog.service" "$txn/new/awg-watchdog.service"
   install -m 644 "$HERE/awg-watchdog.timer" "$txn/new/awg-watchdog.timer"
+  install -m 644 "$HERE/awg-quick@.service" "$txn/new/awg-quick@.service"
   install -m 644 "$HERE/README.md" "$txn/new/README.md"
   printf 'version=%s\ncommit=%s\n' "$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)" \
     "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$txn/new/kit-version"
@@ -295,6 +331,11 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
     install -m 644 "$txn/new/awg-watchdog.service" /etc/systemd/system/awg-watchdog.service || return 1
     install -m 644 "$txn/new/awg-watchdog.timer" /etc/systemd/system/awg-watchdog.timer || return 1
     install -m 644 "$txn/new/README.md" "$DIR/README.md" || return 1
+    if [ -e "$TUNNEL_UNIT" ]; then
+      install -m 644 "$txn/new/awg-quick@.service" "$TUNNEL_UNIT" || return 1
+    fi
+    # the restart below must run the unit that is now on disk
+    if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload 2>/dev/null || true; fi
   }
   rollback_update() {  # rollback_update <message>
     local msg=$1

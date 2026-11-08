@@ -57,6 +57,26 @@ support is out of scope and documented as unsupported; Docker works as shown abo
 IPv4-only with the IPv6 leak documented in README.
 
 
+## Results 2026-11-08 (review fixes, phases A and B)
+
+Host: Debian 13 (trixie) VirtualBox VM `Deb_13_173` (192.168.0.173, 1 vCPU), Docker 29.9.1; kit
+working tree of 2026-11-08 (uncommitted, based on c991994). The VM was returned to its previous state
+afterwards (kit removed, ufw inactive with its earlier rules). Docker on the VM kept running.
+
+| Check | Result |
+|---|---|
+| `tests/test-install.sh`, `tests/test-reliability.sh all` in `ubuntu:24.04` (`docker run --privileged`) | pass, including the new cases |
+| MSS clamping (three namespaces: client MTU 1420, server `awg0` MTU 1280, site; TCP timestamps off) | without the rules the server side saw MSS 1380; with `nat-up.nft` 1240 on both sides; a client MSS of 1000 stayed 1000; reloading the file kept 2 rules |
+| Live install on the VM (new `awg-quick@.service` from the repo, `--wan-if enp0s3`) | service and timer active, `awg_nat` with 2 clamp rules, `awg show` works |
+| Unit `failed` (binary made non-executable, `systemctl restart`) | `is-failed` = failed; `awg-watchdog` attempted a start and logged it; an immediate second run was silent (pause); after the binary was fixed `AWG_WD_RETRY=0` brought the unit up |
+| Same fault, recovery by the real `awg-watchdog.timer` only | unit `active` again about 20 s after the binary was fixed, one log line in `awg-watchdog.service` |
+| ufw active, `ufw-user-input`/`ufw-user-forward` flushed and `awg_nat` deleted | one watchdog run restarted the tunnel, logged the reload, restored `awg_nat` and both ufw rules; `awg show` works |
+
+Not repeated here: a real `systemctl restart nftables`. This VM runs Docker, whose rules live in the
+same ruleset and would be wiped; the flush was simulated by removing the ufw user chains and the NAT
+table. The full variant was run on 2026-11-03 (see above). The `block-ping` table is also lost on a
+flushed ruleset and nothing restores it; that is untested and listed in `TODO.md`.
+
 ## Baseline
 
 1. Install with `--first-client test1` and a dedicated `--subnet`.

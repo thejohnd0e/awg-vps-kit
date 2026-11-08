@@ -7,7 +7,7 @@
 #   AWG_TEST_ALLOW_DESTRUCTIVE=1 tests/test-reliability.sh BIN_DIR [CASE]
 #
 # BIN_DIR holds amneziawg-go, awg, awg-quick built by `install.sh --build-only`.
-# CASE: cli | peers | protocol | update | lock | bootstrap | cleanup | watchdog | all
+# CASE: cli | peers | protocol | update | lock | bootstrap | cleanup | watchdog | mss | all
 # shellcheck disable=SC2119  # fresh_install passes extra options only when a case needs them
 set -euo pipefail
 
@@ -302,6 +302,45 @@ case_update() {
   "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
   grep -qx 'delete table ip awg_nat' "$DIR/nat-up.nft" || fail "update must make nat-up.nft idempotent"
   grep -q '^PostDown = .*|| true$' "$CONF" || fail "update must fix PostDown for an old installation"
+
+  # A server installed before MSS clamping gets the rules once, ahead of the first accept.
+  cat > "$DIR/nat-up.nft" <<'EOS'
+table ip awg_nat
+delete table ip awg_nat
+table ip awg_nat {
+  chain post {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr 10.79.0.0/24 oifname "eth0" masquerade
+  }
+  chain awg_forward {
+    type filter hook forward priority filter - 1; policy accept;
+    iifname "awg0" accept
+    oifname "awg0" ct state established,related accept
+  }
+}
+EOS
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  [ "$(grep -c 'tcp option maxseg size > 1240 tcp option maxseg size set 1240' "$DIR/nat-up.nft")" = 2 ]     || fail "update must add one MSS clamp rule per direction"
+  [ "$(grep -n 'maxseg' "$DIR/nat-up.nft" | tail -1 | cut -d: -f1)" -lt "$(grep -n '^    iifname "awg0" accept$' "$DIR/nat-up.nft" | cut -d: -f1)" ]     || fail "MSS rules must come before the accept rules"
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  [ "$(grep -c 'maxseg size set' "$DIR/nat-up.nft")" = 2 ] || fail "a second update must not add the MSS rules again"
+  ls "$DIR"/nat-up.nft.bak-update-* >/dev/null 2>&1 || fail "update must keep a backup of the old nat-up.nft"
+  rm -f "$DIR"/nat-up.nft.bak-update-*
+
+  # The tunnel unit follows the kit, but only where install.sh created one.
+  local unit=/etc/systemd/system/awg-quick@.service
+  rm -f "$unit"
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  assert_missing "$unit" "update must not create the tunnel unit on a --no-service install"
+  mkdir -p /etc/systemd/system
+  printf '[Unit]\nDescription=old kit unit\n' > "$unit"
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  assert_same "$ROOT/awg-quick@.service" "$unit" "update must refresh an existing tunnel unit"
+  printf '[Unit]\nDescription=old kit unit\n' > "$unit"
+  "$ROOT/update.sh" --bin-dir "$BIN" --no-restart >/dev/null
+  assert_same "$ROOT/awg-quick@.service" "$unit" "update without new binaries must refresh the tunnel unit too"
+  printf '[Unit]\nDescription=old kit unit\n' > "$unit"
+  cp -p "$unit" /tmp/awg-old-unit
   mtime=$(stat -c %y /usr/local/bin/awg)
 
   # A stopped service is not an implicit --no-restart.
@@ -326,7 +365,9 @@ case_update() {
   [ "$(stat -c %y /usr/local/bin/awg)" = "$mtime" ] || fail "failed update must restore the previous binaries"
   [ "$(sha256sum "$DIR/versions" | cut -d' ' -f1)" = "$vhash" ] || fail "failed update must restore versions"
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed update must not touch awg0.conf"
-  ok "update: fresh install, health gate, stopped service, pending block, rollback"
+  assert_same /tmp/awg-old-unit "$unit" "failed update must restore the previous tunnel unit"
+  rm -f "$unit" /tmp/awg-old-unit
+  ok "update: fresh install, health gate, stopped service, pending block, rollback, tunnel unit"
 }
 
 case_lock() {
@@ -390,9 +431,18 @@ case_watchdog() {
 #!/bin/sh
 case "$1" in
   is-active) [ "${WD_ACTIVE:-1}" = 1 ]; exit $? ;;
-  restart) printf '%s\n' "$*" >> /tmp/awg-wd-restarts; exit 0 ;;
+  is-failed) [ "${WD_FAILED:-0}" = 1 ]; exit $? ;;
+  restart|start|reset-failed) printf '%s\n' "$*" >> /tmp/awg-wd-restarts; exit 0 ;;
   *) exit 0 ;;
 esac
+EOS
+  cat > "$tmp/bin/ufw" <<'EOS'
+#!/bin/sh
+case "$1" in
+  status) [ "${WD_UFW:-0}" = 1 ] && echo "Status: active" || echo "Status: inactive"; exit 0 ;;
+  reload) echo "ufw reload" >> /tmp/awg-wd-restarts; exit 0 ;;
+esac
+exit 0
 EOS
   cat > "$tmp/bin/awg" <<'EOS'
 #!/bin/sh
@@ -409,7 +459,8 @@ EOS
 [ "${WD_NFT_FAIL:-0}" = 1 ] && exit 1
 exit 0
 EOS
-  chmod 755 "$tmp/bin/systemctl" "$tmp/bin/awg" "$tmp/bin/ip" "$tmp/bin/nft"
+  chmod 755 "$tmp/bin/systemctl" "$tmp/bin/awg" "$tmp/bin/ip" "$tmp/bin/nft" "$tmp/bin/ufw"
+  export AWG_WD_STAMP="$tmp/failed-at"
 
   PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog" || fail "watchdog must exit 0 on a healthy tunnel"
   [ ! -s /tmp/awg-wd-restarts ] || fail "watchdog restarted a healthy tunnel"
@@ -436,17 +487,114 @@ EOS
 
   WD_ACTIVE=0 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
   [ ! -s /tmp/awg-wd-restarts ] || fail "watchdog restarted an inactive unit"
+
+  # A failed unit is started again, but not every 30 s: one attempt per AWG_WD_RETRY seconds.
+  printf 'table ip awg_nat\n' > "$DIR/nat-up.nft"
+  WD_ACTIVE=0 WD_FAILED=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog" || fail "watchdog must exit 0 for a failed unit"
+  grep -qx 'start awg-quick@awg0' /tmp/awg-wd-restarts || fail "watchdog did not start a failed unit"
+  grep -qx 'reset-failed awg-quick@awg0' /tmp/awg-wd-restarts || fail "watchdog did not clear the failed state"
+  : > /tmp/awg-wd-restarts
+  WD_ACTIVE=0 WD_FAILED=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
+  [ ! -s /tmp/awg-wd-restarts ] || fail "watchdog retried a failed unit before the pause was over"
+  AWG_WD_RETRY=0 WD_ACTIVE=0 WD_FAILED=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
+  grep -qx 'start awg-quick@awg0' /tmp/awg-wd-restarts || fail "watchdog did not retry after the pause"
+  : > /tmp/awg-wd-restarts
+  printf 'garbage\n' > "$AWG_WD_STAMP"
+  WD_ACTIVE=0 WD_FAILED=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
+  grep -qx 'start awg-quick@awg0' /tmp/awg-wd-restarts || fail "a corrupt retry stamp must not block the start"
+  : > /tmp/awg-wd-restarts
+  # a healthy tunnel forgets the last failure, so the next one is handled at once
+  PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
+  [ ! -e "$AWG_WD_STAMP" ] || fail "a healthy run must clear the retry stamp"
+  WD_ACTIVE=0 WD_FAILED=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
+  grep -qx 'start awg-quick@awg0' /tmp/awg-wd-restarts || fail "a new failure after recovery must be handled at once"
+  : > /tmp/awg-wd-restarts
+
+  # ufw loses its chains together with awg_nat on a flushed ruleset: reload it, but only then.
+  WD_NFT_FAIL=1 WD_UFW=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
+  grep -qx 'restart awg-quick@awg0' /tmp/awg-wd-restarts || fail "missing NAT must restart the tunnel"
+  grep -qx 'ufw reload' /tmp/awg-wd-restarts || fail "missing NAT with active ufw must reload ufw"
+  : > /tmp/awg-wd-restarts
+  WD_NFT_FAIL=1 WD_UFW=0 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
+  if grep -qx 'ufw reload' /tmp/awg-wd-restarts; then fail "inactive ufw must not be reloaded"; fi
+  : > /tmp/awg-wd-restarts
+  WD_SHOW_FAIL=1 WD_UFW=1 PATH="$tmp/bin:$PATH" "$ROOT/awg-watchdog"
+  grep -qx 'restart awg-quick@awg0' /tmp/awg-wd-restarts || fail "dead daemon must restart the tunnel"
+  if grep -qx 'ufw reload' /tmp/awg-wd-restarts; then fail "a dead daemon alone must not reload ufw"; fi
+  : > /tmp/awg-wd-restarts
   rm -rf "$tmp"; rm -f "$CONF"
-  ok "watchdog: healthy, dead daemon, missing interface, NAT only for nft installs, inactive unit"
+  unset AWG_WD_STAMP
+  ok "watchdog: healthy, dead daemon, missing interface, NAT only for nft installs, inactive unit, failed unit, ufw reload"
+}
+
+case_mss() {
+  echo "# mss"
+  # Needs network namespaces and nft inside them: a plain container may not allow that
+  # (run it with --privileged), then the case is skipped rather than failed.
+  apt-get install -y -qq iproute2 netcat-openbsd >/dev/null 2>&1 || { echo "skip: mss (iproute2/netcat-openbsd are not installable)"; return 0; }
+  if ! ip netns add awgmss-probe 2>/dev/null; then echo "skip: mss (cannot create network namespaces here)"; return 0; fi
+  ip netns del awgmss-probe
+  fresh_install
+  mss_cleanup() { pkill -f 'nc -l 198.51.100.2' 2>/dev/null || true; for n in awgc awgr awgs; do ip netns del "$n" 2>/dev/null || true; done; }
+  mss_cleanup; trap mss_cleanup RETURN
+  # client (awgc, MTU 1420) -- awg0 (awgr, MTU 1280, the server) -- eth0 -- site (awgs, MTU 1500)
+  ip netns add awgc; ip netns add awgr; ip netns add awgs
+  # created straight inside the namespaces: the host side may already have an eth0
+  ip link add cl0 netns awgc type veth peer name awg0 netns awgr
+  ip link add sv0 netns awgs type veth peer name eth0 netns awgr
+  ip -n awgc addr add 10.79.0.2/24 dev cl0; ip -n awgc link set cl0 mtu 1420 up; ip -n awgc link set lo up
+  ip -n awgr addr add 10.79.0.1/24 dev awg0; ip -n awgr link set awg0 mtu 1280 up
+  ip -n awgr addr add 198.51.100.1/24 dev eth0; ip -n awgr link set eth0 mtu 1500 up; ip -n awgr link set lo up
+  ip -n awgs addr add 198.51.100.2/24 dev sv0; ip -n awgs link set sv0 mtu 1500 up; ip -n awgs link set lo up
+  ip -n awgc route add default via 10.79.0.1
+  ip -n awgs route add 10.79.0.0/24 via 198.51.100.1
+  ip netns exec awgr sysctl -q -w net.ipv4.ip_forward=1
+  # ss reports the usable MSS (advertised minus the 12 bytes of the timestamp option): switch the
+  # option off on both ends so the numbers below are the MSS values carried in the SYN
+  ip netns exec awgc sysctl -q -w net.ipv4.tcp_timestamps=0
+  ip netns exec awgs sysctl -q -w net.ipv4.tcp_timestamps=0
+
+  # the MSS of the server-side and the client-side socket of one connection
+  mss_probe() {  # mss_probe <port>: prints "<server mss> <client mss>"
+    ip netns exec awgs nc -l 198.51.100.2 "$1" >/dev/null 2>&1 & local nc=$!
+    sleep 0.5
+    ip netns exec awgc bash -c "exec 3<>/dev/tcp/198.51.100.2/$1; sleep 1.5" & local cl=$!
+    sleep 0.8
+    local sm cm
+    sm=$(ip netns exec awgs ss -tin state established "( sport = :$1 )" | grep -o 'mss:[0-9]*' | head -1 | cut -d: -f2)
+    cm=$(ip netns exec awgc ss -tin state established "( dport = :$1 )" | grep -o 'mss:[0-9]*' | head -1 | cut -d: -f2)
+    wait $cl 2>/dev/null || true; kill $nc 2>/dev/null || true; wait $nc 2>/dev/null || true
+    echo "${sm:-none} ${cm:-none}"
+  }
+
+  # without the rules the client advertises an MSS for its own 1420 MTU
+  grep -q 'maxseg' "$DIR/nat-up.nft" || fail "nat-up.nft has no MSS clamp rules"
+  grep -v maxseg "$DIR/nat-up.nft" > /tmp/awg-nat-noclamp.nft
+  ip netns exec awgr nft -f /tmp/awg-nat-noclamp.nft || fail "cannot load the NAT file without clamping"
+  local base; base=$(mss_probe 9101)
+  [ "${base%% *}" = 1380 ] || fail "baseline: server side should see the client's MSS 1380 (got: $base)"
+
+  ip netns exec awgr nft -f "$DIR/nat-up.nft" || fail "cannot load $DIR/nat-up.nft"
+  local clamped; clamped=$(mss_probe 9102)
+  [ "${clamped%% *}" = 1240 ] || fail "clamped: server side should see MSS 1240 (got: $clamped)"
+  [ "${clamped##* }" = 1240 ] || fail "clamped: client side should see MSS 1240 (got: $clamped)"
+  # a SYN that is already small must be left alone
+  ip -n awgc route change default via 10.79.0.1 advmss 1000
+  local small; small=$(mss_probe 9103)
+  [ "${small%% *}" = 1000 ] || fail "a small MSS must not be raised (got: $small)"
+  # reloading must stay idempotent: one rule per direction, not two
+  ip netns exec awgr nft -f "$DIR/nat-up.nft"
+  [ "$(ip netns exec awgr nft list table ip awg_nat | grep -c 'maxseg')" = 2 ] || fail "reload duplicated the clamp rules"
+  ok "mss: baseline 1380, clamped 1240 both ways, small MSS untouched, reload idempotent"
 }
 
 if [ "$CASE" = all ]; then
-  for c in cli bootstrap cleanup lock peers protocol update watchdog; do
+  for c in cli bootstrap cleanup lock peers protocol update watchdog mss; do
     "case_$c"
   done
 else
   case "$CASE" in
-    cli|bootstrap|cleanup|lock|peers|protocol|update|watchdog) "case_$CASE" ;;
+    cli|bootstrap|cleanup|lock|peers|protocol|update|watchdog|mss) "case_$CASE" ;;
     *) echo "unknown case: $CASE" >&2; exit 2 ;;
   esac
 fi

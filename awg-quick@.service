@@ -1,0 +1,15 @@
+[Unit]
+Description=AmneziaWG %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
+Environment=WG_QUICK_CONFIG_DIR=/etc/amnezia/amneziawg
+ExecStart=/usr/local/bin/awg-quick up %i
+ExecStop=/usr/local/bin/awg-quick down %i
+
+[Install]
+WantedBy=multi-user.target

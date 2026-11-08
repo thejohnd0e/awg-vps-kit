@@ -1,16 +1,28 @@
 #!/bin/bash
 # awg-watchdog: restart awg-quick@awg0 when the userspace daemon died but the
-# oneshot unit still reports "active". Run from awg-watchdog.timer every 30 s.
+# oneshot unit still reports "active", or start it again when the unit is "failed".
+# Run from awg-watchdog.timer every 30 s.
 set -euo pipefail
 
 IF=${AWG_IF:-awg0}
 UNIT="awg-quick@$IF"
 DIR=/etc/amnezia/amneziawg
 LOCK=/run/lock/awg-vps-kit.lock
+# a unit that keeps failing is retried at most once per RETRY seconds (not every 30 s)
+STAMP=${AWG_WD_STAMP:-/run/awg-watchdog.failed-at}
+RETRY=${AWG_WD_RETRY:-300}
 
 command -v systemctl >/dev/null 2>&1 || exit 0
 [ -f "$DIR/$IF.conf" ] || exit 0
-systemctl is-active --quiet "$UNIT" || exit 0
+
+# "failed" is an error state, not a deliberate stop: after `systemctl stop` the unit is
+# "inactive" and is left alone. Any other state that is not "active" is not ours to touch.
+failed=0
+if systemctl is-failed --quiet "$UNIT"; then
+  failed=1
+elif ! systemctl is-active --quiet "$UNIT"; then
+  exit 0
+fi
 
 # Never race add/remove/protocol/update/uninstall: those hold the kit lock.
 if command -v flock >/dev/null 2>&1; then
@@ -19,18 +31,38 @@ if command -v flock >/dev/null 2>&1; then
   flock -n 9 || exit 0
 fi
 
+if [ "$failed" = 1 ]; then
+  now=$(date +%s)
+  last=$(cat "$STAMP" 2>/dev/null || echo 0)
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  if [ $((now - last)) -lt "$RETRY" ]; then exit 0; fi
+  echo "$now" > "$STAMP" 2>/dev/null || true
+  echo "awg-watchdog: $UNIT is failed; starting it again (the next attempt is at least ${RETRY}s away)" >&2
+  systemctl reset-failed "$UNIT" 2>/dev/null || true
+  systemctl start "$UNIT" || echo "awg-watchdog: start of $UNIT failed; see: journalctl -u $UNIT" >&2
+  exit 0
+fi
+
 # amneziawg-go owns the interface; if it died, both the device and the awg query
 # are gone even though the oneshot unit is still "active". The NAT table can also
 # disappear without touching the interface (e.g. `systemctl restart nftables`).
-healthy=1
+healthy=1; nat_missing=0
 awg show "$IF" >/dev/null 2>&1 || healthy=0
 ip link show "$IF" >/dev/null 2>&1 || healthy=0
 if [ -f "$DIR/nat-up.nft" ] && command -v nft >/dev/null 2>&1 \
    && ! nft list table ip awg_nat >/dev/null 2>&1; then
-  healthy=0
+  healthy=0; nat_missing=1
 fi
-[ "$healthy" = 1 ] && exit 0
+if [ "$healthy" = 1 ]; then rm -f "$STAMP" 2>/dev/null || true; exit 0; fi
 
 echo "awg-watchdog: $IF or its NAT table is gone while $UNIT reports active; restarting" >&2
 systemctl restart "$UNIT" || echo "awg-watchdog: restart of $UNIT failed" >&2
+
+# A flushed ruleset (the default /etc/nftables.conf starts with `flush ruleset`) took the ufw
+# chains with it as well: rebuild them from ufw's own configuration.
+if [ "$nat_missing" = 1 ] && command -v ufw >/dev/null 2>&1 \
+   && LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then
+  echo "awg-watchdog: the NAT table was gone, reloading ufw to restore its rules" >&2
+  ufw reload >/dev/null 2>&1 || echo "awg-watchdog: ufw reload failed" >&2
+fi
 exit 0

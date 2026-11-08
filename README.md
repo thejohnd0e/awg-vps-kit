@@ -80,9 +80,9 @@ before anything is installed: the port must be 1-65535 and every subnet octet 0-
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--subnet 10.79.0` | `10.77.0` | tunnel /24 prefix, the server gets `.1`. **Use a different one per server** (e.g. `10.77.0`, `10.78.0`). |
+| `--subnet 10.79.0` | `10.77.0` | tunnel /24 prefix, the server gets `.1`. **Use a different one per server** (e.g. `10.77.0`, `10.78.0`). The installer refuses a /24 that overlaps a network the server is connected to (or a more specific route), and warns when it falls inside a broader route. |
 | `--port 443` | `443` | UDP listen port |
-| `--endpoint IP/HOST` | auto (api.ipify.org) | address written into client configs |
+| `--endpoint IP/HOST` | auto (api.ipify.org, then ifconfig.me, icanhazip.com) | address written into client configs |
 | `--wan-if eth0` | from default route | interface used for NAT |
 | `--bin-dir DIR` | build | use prebuilt `amneziawg-go`, `awg`, `awg-quick` from `DIR` (copy them from another server, e.g. `/opt/amneziawg/bin`, to skip the build) |
 | `--build-only DIR` | | only build the binaries into `DIR` and exit |
@@ -119,7 +119,10 @@ What the installer does:
    unit reports `active`, and restarts the tunnel if `amneziawg-go` died (it skips while a
    kit operation holds the lock).
 
-It refuses to run if `awg0.conf` already exists. If the provider has a cloud firewall /
+It refuses to run if `awg0.conf` already exists. If an install fails before the tunnel is up,
+it disables the service, removes the NAT table and the ufw rules it added, and moves its files
+to `/etc/amnezia/amneziawg.failed-<timestamp>`, so the next run starts clean; delete that folder
+once you have looked at it. If the provider has a cloud firewall /
 security group, open UDP 443 there yourself.
 
 ## Layout on the server
@@ -154,13 +157,18 @@ awg-client mtu 1420         # MTU written into client configs (without an argume
 - The next free address is picked automatically.
 - A new client works immediately (added to the running tunnel with `awg set`) and is
   also appended to `awg0.conf`, so it survives a reboot.
-- Before every change a copy is saved as `awg0.conf.bak-awg-client`.
+- `add` and `remove` stage the new `awg0.conf` first and roll back if any step fails. Only
+  `protocol` keeps copies (`awg0.conf.bak-protocol-*`, `protocol.bak-*`; the 5 newest of each).
 - One config = one device. Two devices on the same config kick each other off.
 - Do not remove a client that is in use: that device loses its VPN immediately.
 - Client MTU is 1420 by default (1500 minus the tunnel overhead). Some sites (for example 2ip.io)
   flag a tunnel MTU of 1280 as "VPN fingerprint". The server interface stays at 1280; `awg-client mtu N`
   (1280-1500) changes only the client configs. A device keeps its old MTU until it imports
   `awg-client show <name>` again. If the server's own uplink MTU is below 1500, use WAN MTU minus 80.
+- The server clamps the TCP MSS of connections through the tunnel to 1240 (the 1280 MTU of `awg0`
+  minus 40 bytes of headers), in both directions; smaller values are left alone. Without it a client
+  with MTU 1420 would advertise an MSS that does not fit the server interface. `update.sh` adds the
+  rules to servers installed earlier.
 
 ### Using a client config
 
@@ -221,12 +229,17 @@ The unit is `oneshot`: if `amneziawg-go` dies, systemd still reports `active` wh
 interface and the UDP port are gone. `awg-watchdog.timer` runs every 30 s and restarts the
 unit in that case (logged in `awg-watchdog.service`); it does not restart on its own while
 `add`/`remove`/`protocol`/`update` holds the kit lock. It also restores the `awg_nat` table
-if something removed it. To turn it off: `systemctl disable --now awg-watchdog.timer`.
+if something removed it. If the unit is in the `failed` state (for example a start that did not
+work), the watchdog starts it again, but at most once per 5 minutes so a permanent fault does not
+turn into a restart loop; read the reason with `journalctl -u awg-quick@awg0`. A unit you stopped
+yourself (`systemctl stop`) is `inactive`, not `failed`, and is left alone. To turn the watchdog
+off: `systemctl disable --now awg-watchdog.timer`.
 
 **Do not run `systemctl restart nftables`** on this host: the default `/etc/nftables.conf`
 starts with `flush ruleset` and wipes `awg_nat` and the ufw rules. If it happens, the watchdog
-recreates `awg_nat` within 30 s, but ufw rules need `ufw reload` (and `ufw route allow` for
-the tunnel is lost until then).
+recreates `awg_nat` within 30 s and, when ufw is active, runs `ufw reload` to bring its rules
+(and `ufw route allow` for the tunnel) back. The `block-ping` table is not restored by the
+watchdog: run `systemctl restart block-ping` if you use it.
 
 A `latest handshake` older than a couple of minutes for an enabled client means the
 tunnel does not work: UDP port blocked (provider firewall / ISP), wrong keys, or

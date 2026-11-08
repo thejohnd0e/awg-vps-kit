@@ -218,6 +218,22 @@ on_signal() {
 }
 trap on_signal INT TERM
 
+prune_backups() {  # prune_backups <path-prefix>: keep the 5 newest "<prefix>*<YYYYmmdd-HHMMSS>" files
+  # by the stamp in the name: cp -p keeps the original's mtime, so mtime says nothing
+  local f
+  find "$(dirname "$1")" -maxdepth 1 -type f -name "$(basename "$1")*" 2>/dev/null \
+    | sed -n 's/.*\([0-9]\{8\}-[0-9]\{6\}\)$/\1 &/p' | sort -r | tail -n +6 | cut -d' ' -f2- \
+    | while IFS= read -r f; do rm -f -- "$f"; done
+}
+drop_peer() {  # drop_peer <name> < conf: print conf without the [Peer] block commented "# <name>"
+  # Line based: a block starts at any "[Section]" line, so peers that are not separated
+  # by blank lines (hand-edited files) are still told apart. Trailing blank lines are trimmed.
+  awk -v n="# $1" '
+    function flush() { if (!(peer && hit)) out = out buf; buf = ""; peer = 0; hit = 0 }
+    /^\[/ { flush(); peer = ($0 ~ /^\[Peer\]/) }
+    { buf = buf $0 "\n"; if (peer && $0 == n) hit = 1 }
+    END { flush(); sub(/\n+$/, "\n", out); printf "%s", out }'
+}
 list_names() { awk '/^\[Peer\]/{p=1;n="";next} p&&/^# /{n=substr($0,3)} p&&/^AllowedIPs/{print n; p=0}' "$CONF"; }
 make_protocol_file() {  # make_protocol_file <version> <source> <dest>: keep every other key
   local ver=$1 src=$2 dst=$3 seen=0 line
@@ -300,6 +316,9 @@ case "$cmd" in
     fi
     cp -p "$pt/old.conf" "$backup"
     cp -p "$pt/old.protocol" "$DIR/protocol.bak-$cur.$stamp"
+    # every backup holds the server private key: do not let them pile up
+    prune_backups "$CONF.bak-protocol-"
+    prune_backups "$DIR/protocol.bak-"
 
     if systemctl is-active --quiet "awg-quick@$IF" 2>/dev/null; then
       if systemctl restart "awg-quick@$IF"; then
@@ -356,8 +375,10 @@ case "$cmd" in
     done
     TPSK=$TXN/$name.psk
     # prepare the whole result before changing the runtime
-    awk -v n="# $name" 'BEGIN{RS="";ORS="\n\n"} !($0 ~ /^\[Peer\]/ && index($0, "\n" n "\n"))' "$CONF" > "$TXN/new.conf" \
-      || fail_txn "cannot prepare the new $CONF"
+    drop_peer "$name" < "$CONF" > "$TXN/new.conf" || fail_txn "cannot prepare the new $CONF"
+    # exactly one block may go: anything else means the file is not in the expected shape
+    [ "$(grep -c '^\[Peer\]' "$TXN/new.conf")" = "$(( $(grep -c '^\[Peer\]' "$CONF") - 1 ))" ] \
+      || fail_txn "$CONF does not have exactly one [Peer] block for $name; refusing to edit it"
     PHASE=1
     awg set "$IF" peer "$pub" remove || { PHASE=0; fail_txn "cannot revoke $name on the running interface"; }
     mv -f "$TXN/new.conf" "$CONF" || fail_txn "cannot write $CONF; $name was revoked"

@@ -45,6 +45,27 @@ valid_subnet() {
   [ "$a" -le 255 ] && [ "$b" -le 255 ] && [ "$c" -le 255 ]
 }
 
+ip2int() { local a b c d; IFS=. read -r a b c d <<<"$1"; echo $(( (a << 24) | (b << 16) | (c << 8) | d )); }
+
+subnet_conflicts() {  # subnet_conflicts <a.b.c>: "error|warn <route>" per IPv4 route overlapping <a.b.c>.0/24
+  local net dst len rnet mask line kind
+  net=$(ip2int "$1.0")
+  while IFS= read -r line; do
+    dst=${line%% *}
+    [[ "$dst" =~ ^[0-9]+(\.[0-9]+){3}(/[0-9]+)?$ ]] || continue   # skips default, unreachable, ...
+    len=32; [[ "$dst" != */* ]] || len=${dst#*/}
+    rnet=$(ip2int "${dst%/*}")
+    # two prefixes overlap when they agree on the shorter one's bits
+    mask=$(( len < 24 ? len : 24 )); mask=$(( mask == 0 ? 0 : (0xffffffff << (32 - mask)) & 0xffffffff ))
+    [ $(( net & mask )) = $(( rnet & mask )) ] || continue
+    # inside our /24, or a directly connected network: the tunnel would cut the server off
+    # from those hosts. A broader routed prefix (e.g. a 10.0.0.0/8 VPC route) only loses this /24.
+    kind=warn
+    if [ "$len" -ge 24 ] || [[ " $line " == *" scope link "* ]]; then kind=error; fi
+    echo "$kind $line"
+  done < <(ip -4 route show 2>/dev/null)
+}
+
 SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; PROTOCOL=; NO_SERVICE=0; ALLOW_OUTDATED=0; BLOCK_PING=0
 ORIG_ARGS=("$@")
 while [ $# -gt 0 ]; do
@@ -131,6 +152,16 @@ export DEBIAN_FRONTEND=noninteractive
 if [ -z "$BUILD_ONLY" ]; then
   take_lock
   if [ -f "$DIR/$IF.conf" ]; then die "$DIR/$IF.conf already exists, refusing to overwrite (remove it first if this is intended)"; fi
+  if command -v ip >/dev/null; then
+    conflicts=$(subnet_conflicts "$SUBNET")
+    if grep -q '^error ' <<<"$conflicts"; then
+      die "tunnel subnet $SUBNET.0/24 overlaps a network this server already uses:
+$(sed -n 's/^error /  /p' <<<"$conflicts")
+pick another one with --subnet (for example 10.79.0)"
+    fi
+    [ -z "$conflicts" ] || echo "warning: tunnel subnet $SUBNET.0/24 is inside an existing route; that part of it will go to the tunnel:
+$(sed -n 's/^warn /  /p' <<<"$conflicts")" >&2
+  fi
   if [ "$NO_SERVICE" = 0 ] && command -v ss >/dev/null; then
     busy=$(ss -H -ulnp "sport = :$PORT" 2>/dev/null || true)
     [ -z "$busy" ] || die "UDP port $PORT is already in use:
@@ -222,8 +253,12 @@ install -m 755 "$HERE/block-ping" /usr/local/bin/block-ping
 [ -n "$WAN_IF" ] || WAN_IF=$(ip -4 route show default | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
 [ -n "$WAN_IF" ] || die "cannot detect the outgoing interface, pass --wan-if"
 if [ -z "$ENDPOINT" ]; then
-  ENDPOINT=$(curl -4 -fsS --max-time 10 https://api.ipify.org || true)
-  [ -n "$ENDPOINT" ] || die "cannot detect the public IP (api.ipify.org unreachable), pass --endpoint"
+  # several services: one of them may be down or blocked; accept only a bare IPv4 address
+  for url in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
+    v=$(curl -4 -fsS --max-time 10 "$url" 2>/dev/null | tr -d ' \r\n' || true)
+    if [[ "$v" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then ENDPOINT=$v; break; fi
+  done
+  [ -n "$ENDPOINT" ] || die "cannot detect the public IP (api.ipify.org, ifconfig.me and icanhazip.com failed), pass --endpoint"
 fi
 
 # ----------------------------------------------------------- parameters
@@ -247,6 +282,32 @@ if [ "$PROTOCOL" = 2.0 ]; then
   mapfile -t R < <(printf '%s\n' "${R[@]}" | sort -n)
   H=("${R[0]}-${R[1]}" "${R[2]}-${R[3]}" "${R[4]}-${R[5]}" "${R[6]}-${R[7]}")
 fi
+
+# From here on the run creates installed state. If it fails before the tunnel is up, undo
+# what blocks a re-run (the service, NAT, ufw rules) and move the files aside, so the next
+# install.sh starts clean while the failed attempt stays available for diagnosis.
+INSTALL_OK=0; DIR_EXISTED=0; UFW_PORT_ADDED=0; UFW_ROUTE_ADDED=0; UNIT_ENABLED=0
+[ ! -e "$DIR" ] || DIR_EXISTED=1
+cleanup_failed_install() {
+  local rc=$? ts
+  [ "$INSTALL_OK" = 0 ] || return 0
+  trap - EXIT
+  ts=$(date +%Y%m%d-%H%M%S)
+  echo "install failed: undoing this attempt" >&2
+  if [ "$UNIT_ENABLED" = 1 ]; then systemctl disable --now "awg-quick@$IF" >/dev/null 2>&1 || true; fi
+  nft delete table ip awg_nat 2>/dev/null || true
+  [ "$UFW_PORT_ADDED" = 0 ] || ufw delete allow "$PORT/udp" >/dev/null 2>&1 || true
+  [ "$UFW_ROUTE_ADDED" = 0 ] || ufw route delete allow in on "$IF" out on "$WAN_IF" >/dev/null 2>&1 || true
+  if [ "$DIR_EXISTED" = 0 ] && [ -d "$DIR" ]; then
+    mv "$DIR" "$DIR.failed-$ts" && echo "files of the failed attempt: $DIR.failed-$ts (remove it when done)" >&2
+  elif [ -f "$DIR/$IF.conf" ]; then
+    # the folder was there before (e.g. uninstall --keep-config): only move what this run wrote
+    mv "$DIR/$IF.conf" "$DIR/$IF.conf.failed-$ts" && echo "config of the failed attempt: $DIR/$IF.conf.failed-$ts" >&2
+  fi
+  exit "$rc"
+}
+trap cleanup_failed_install EXIT
+trap 'exit 130' INT TERM
 
 mkdir -p "$DIR/clients" "$DIR/transactions"
 chmod 700 "$DIR" "$DIR/clients" "$DIR/transactions"
@@ -279,6 +340,10 @@ table ip awg_nat {
   }
   chain awg_forward {
     type filter hook forward priority filter - 1; policy accept;
+    # MSS clamping for the 1280 MTU of $IF (1280 - 40 bytes of IPv4+TCP headers): clients use
+    # a larger MTU (1420), so without this they advertise an MSS that does not fit the tunnel.
+    iifname "$IF" tcp flags syn tcp option maxseg size > 1240 tcp option maxseg size set 1240
+    oifname "$IF" tcp flags syn tcp option maxseg size > 1240 tcp option maxseg size set 1240
     iifname "$IF" accept
     oifname "$IF" ct state established,related accept
   }
@@ -315,6 +380,7 @@ if command -v firewall-cmd >/dev/null 2>&1 && [ "$(firewall-cmd --state 2>/dev/n
 fi
 
 if [ "$NO_SERVICE" = 1 ]; then
+  INSTALL_OK=1
   log "Files written (--no-service): $DIR"
   [ -z "$FIRST" ] || echo "warning: --first-client is ignored with --no-service" >&2
 else
@@ -328,34 +394,23 @@ else
   # LC_ALL=C: the status line is localised otherwise.
   if command -v ufw >/dev/null && LC_ALL=C ufw status | grep -q '^Status: active'; then
     log "ufw is active: allowing $PORT/udp and routing $IF -> $WAN_IF"
+    # remember which rules are new: a failed install removes only those, never the admin's own
+    ufw_had=$(LC_ALL=C ufw show added 2>/dev/null || true)
+    grep -qxF "ufw allow $PORT/udp" <<<"$ufw_had" || UFW_PORT_ADDED=1
+    grep -qxF "ufw route allow in on $IF out on $WAN_IF" <<<"$ufw_had" || UFW_ROUTE_ADDED=1
     ufw allow "$PORT/udp" >/dev/null
     ufw route allow in on "$IF" out on "$WAN_IF" >/dev/null
   fi
 
   log "Creating systemd service awg-quick@$IF"
-  cat > /etc/systemd/system/awg-quick@.service <<'EOF'
-[Unit]
-Description=AmneziaWG %i
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-Environment=WG_QUICK_USERSPACE_IMPLEMENTATION=amneziawg-go
-Environment=WG_QUICK_CONFIG_DIR=/etc/amnezia/amneziawg
-ExecStart=/usr/local/bin/awg-quick up %i
-ExecStop=/usr/local/bin/awg-quick down %i
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  chmod 644 /etc/systemd/system/awg-quick@.service
+  # the unit lives in the kit so update.sh can refresh it on existing servers
+  install -m 644 "$HERE/awg-quick@.service" /etc/systemd/system/awg-quick@.service
   systemctl daemon-reload
+  UNIT_ENABLED=1
   systemctl enable "awg-quick@$IF"
   systemctl start "awg-quick@$IF" || true
   sleep 2
-  systemctl is-active "awg-quick@$IF" >/dev/null || { journalctl -u "awg-quick@$IF" -n 30 --no-pager; die "service did not start (config left in $DIR: remove it before re-running)"; }
+  systemctl is-active "awg-quick@$IF" >/dev/null || { journalctl -u "awg-quick@$IF" -n 30 --no-pager; die "service did not start"; }
   awg show "$IF" | sed -n '1,5p'
 
   # The unit is oneshot: if amneziawg-go dies, systemd still reports "active" and the
@@ -366,6 +421,7 @@ EOF
   install -m 644 "$HERE/awg-watchdog.service" "$HERE/awg-watchdog.timer" /etc/systemd/system/
   systemctl daemon-reload
   systemctl enable --now awg-watchdog.timer >/dev/null
+  INSTALL_OK=1
 
   cat <<EOF
 
