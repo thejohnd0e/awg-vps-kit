@@ -340,6 +340,16 @@ EOS
   printf '[Unit]\nDescription=old kit unit\n' > "$unit"
   "$ROOT/update.sh" --bin-dir "$BIN" --no-restart >/dev/null
   assert_same "$ROOT/awg-quick@.service" "$unit" "update without new binaries must refresh the tunnel unit too"
+
+  # The shared library is part of the managed set: restored when missing, refreshed when stale.
+  local libf=/usr/local/lib/awg-vps-kit/common.sh
+  assert_same "$ROOT/lib/common.sh" "$libf" "install must have put the library in place"
+  rm -rf /usr/local/lib/awg-vps-kit
+  "$ROOT/update.sh" --bin-dir "$BIN" --no-restart >/dev/null
+  assert_same "$ROOT/lib/common.sh" "$libf" "update must restore a missing library"
+  printf '# stale copy\n' > "$libf"
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  assert_same "$ROOT/lib/common.sh" "$libf" "update must refresh a stale library"
   printf '[Unit]\nDescription=old kit unit\n' > "$unit"
   cp -p "$unit" /tmp/awg-old-unit
   mtime=$(stat -c %y /usr/local/bin/awg)
@@ -358,6 +368,8 @@ EOS
   rm -rf "$DIR/transactions/update.test"
 
   # A failed restart must restore the previous binaries and metadata.
+  { cat "$ROOT/lib/common.sh"; echo "# previous library"; } > "$libf"
+  cp -p "$libf" /tmp/awg-old-lib
   mtime=$(stat -c %y /usr/local/bin/awg)
   local vhash; vhash=$(sha256sum "$DIR/versions" | cut -d' ' -f1)
   if SYSTEMCTL_ACTIVE=1 SYSTEMCTL_RESTART_FAIL=1 "$ROOT/update.sh" --force --bin-dir "$BIN" >/dev/null 2>&1; then
@@ -367,8 +379,9 @@ EOS
   [ "$(sha256sum "$DIR/versions" | cut -d' ' -f1)" = "$vhash" ] || fail "failed update must restore versions"
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed update must not touch awg0.conf"
   assert_same /tmp/awg-old-unit "$unit" "failed update must restore the previous tunnel unit"
-  rm -f "$unit" /tmp/awg-old-unit
-  ok "update: fresh install, health gate, stopped service, pending block, rollback, tunnel unit"
+  assert_same /tmp/awg-old-lib "$libf" "failed update must restore the previous library"
+  rm -f "$unit" /tmp/awg-old-unit /tmp/awg-old-lib
+  ok "update: fresh install, health gate, stopped service, pending block, rollback, tunnel unit, library"
 }
 
 case_lock() {

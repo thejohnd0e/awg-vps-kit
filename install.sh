@@ -5,8 +5,9 @@
 # Usage: install.sh [options]   (install.sh --help prints the same list)
 set -euo pipefail
 
+# Only die() is needed before the kit checkout is known (--help, bootstrap through `curl | bash`);
+# lib/common.sh is sourced below, once HERE is known, and defines it again together with the rest.
 die() { echo "error: $*" >&2; exit 1; }
-log() { printf '\n==> %s\n' "$*"; }
 
 usage() {
   cat <<'EOF'
@@ -120,16 +121,14 @@ fi
 HERE=$SELF_DIR
 DIR=/etc/amnezia/amneziawg
 IF=awg0
+LIB_DIR=/usr/local/lib/awg-vps-kit
+
+# shellcheck source=lib/common.sh
+. "$HERE/lib/common.sh"
 
 [ "$(id -u)" = 0 ] || die "run as root"
 
-LOCK_FILE=/run/lock/awg-vps-kit.lock
-take_lock() {  # serialise every operation that reads and writes installed state
-  command -v flock >/dev/null || die "flock is required (util-linux)"
-  mkdir -p /run/lock
-  exec 9>>"$LOCK_FILE"
-  flock -w 10 9 || die "another kit operation is running (lock: $LOCK_FILE)"
-}
+# take_lock comes from lib/common.sh.
 # --build-only writes nothing outside its output directory and is called by update.sh,
 # which already holds the lock: taking it there would deadlock. The lock is taken below,
 # after the protocol prompt, just before the first check of installed state.
@@ -273,6 +272,9 @@ for f in amneziawg-go awg awg-quick; do [ -x "$BIN_DIR/$f" ] || die "missing $BI
 log "Installing binaries to /usr/local/bin"
 apt-get install -y -qq iproute2 nftables qrencode curl >/dev/null
 install -m 755 "$BIN_DIR/amneziawg-go" "$BIN_DIR/awg" "$BIN_DIR/awg-quick" /usr/local/bin/
+# the library first: awg-client sources it from here
+install -d -m 755 "$LIB_DIR"
+install -m 644 "$HERE/lib/common.sh" "$LIB_DIR/common.sh"
 install -m 755 "$HERE/awg-client" /usr/local/bin/awg-client
 install -m 755 "$HERE/block-ping" /usr/local/bin/block-ping
 
@@ -282,33 +284,18 @@ install -m 755 "$HERE/block-ping" /usr/local/bin/block-ping
 if [ -z "$ENDPOINT" ]; then
   # several services: one of them may be down or blocked; accept only a bare IPv4 address
   for url in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
-    v=$(curl -4 -fsS --max-time 10 "$url" 2>/dev/null | tr -d ' \r\n' || true)
-    if [[ "$v" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then ENDPOINT=$v; break; fi
+    got=$(curl -4 -fsS --max-time 10 "$url" 2>/dev/null | tr -d ' \r\n' || true)
+    if [[ "$got" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then ENDPOINT=$got; break; fi
   done
   [ -n "$ENDPOINT" ] || die "cannot detect the public IP (api.ipify.org, ifconfig.me and icanhazip.com failed), pass --endpoint"
 fi
 
 # ----------------------------------------------------------- parameters
-rnd32() { local v=0; while [ "$v" -lt 5 ]; do v=$(od -An -N4 -tu4 /dev/urandom | tr -d " "); done; echo "$v"; }
-H=()
-while [ ${#H[@]} -lt 4 ]; do
-  v=$(rnd32)
-  case " ${H[*]} " in *" $v "*) ;; *) H+=("$v") ;; esac
-done
+# H1-H4: four distinct values, or (2.0) four non-overlapping ranges; same generator as awg-client
+mapfile -t H < <(awg_h_values "$PROTOCOL")
+[ ${#H[@]} -eq 4 ] || die "could not generate the H1-H4 values"
 S1=$(shuf -i 15-150 -n 1); S2=$(shuf -i 15-150 -n 1)
 while [ $((S1 + 56)) -eq "$S2" ]; do S2=$(shuf -i 15-150 -n 1); done
-
-# 2.0: S3/S4 and H1-H4 as non-overlapping ranges (8 distinct values, sorted, paired).
-S3=$(shuf -i 8-64 -n 1); S4=$(shuf -i 4-32 -n 1)
-if [ "$PROTOCOL" = 2.0 ]; then
-  R=()
-  while [ ${#R[@]} -lt 8 ]; do
-    v=$(rnd32)
-    case " ${R[*]} " in *" $v "*) ;; *) R+=("$v") ;; esac
-  done
-  mapfile -t R < <(printf '%s\n' "${R[@]}" | sort -n)
-  H=("${R[0]}-${R[1]}" "${R[2]}-${R[3]}" "${R[4]}-${R[5]}" "${R[6]}-${R[7]}")
-fi
 
 # From here on the run creates installed state. If it fails before the tunnel is up, undo
 # what blocks a re-run (the service, NAT, ufw rules) and move the files aside, so the next
@@ -352,7 +339,7 @@ echo "$ENDPOINT" > "$DIR/endpoint"; chmod 644 "$DIR/endpoint"
 {
   echo "protocol=$PROTOCOL"
   # 1.5: QUIC-like Initial header, random connection id, then random payload (client side only)
-  [ "$PROTOCOL" != 1.5 ] || echo "I1=<b 0xc00000000108><r 8><b 0x00><r 64>"
+  [ "$PROTOCOL" != 1.5 ] || echo "I1=$AWG_I1_DEFAULT"
 } > "$DIR/protocol"; chmod 644 "$DIR/protocol"
 
 # -------------------------------------------------------------- firewall
@@ -397,7 +384,7 @@ PostUp = nft -f $DIR/nat-up.nft
 PostDown = nft delete table ip awg_nat 2>/dev/null || true
 EOF
 chmod 600 "$DIR/$IF.conf"
-[ "$PROTOCOL" != 2.0 ] || printf 'S3 = %s\nS4 = %s\n' "$S3" "$S4" >> "$DIR/$IF.conf"
+[ "$PROTOCOL" != 2.0 ] || awg_s34_values >> "$DIR/$IF.conf"
 install -m 644 "$HERE/README.md" "$DIR/README.md"
 
 # firewalld is not supported (see README): say so instead of leaving a tunnel that looks

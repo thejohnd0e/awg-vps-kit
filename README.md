@@ -137,6 +137,7 @@ security group, open UDP 443 there yourself.
 | Service | `awg-quick@awg0` (unit in `/etc/systemd/system/awg-quick@.service`) |
 | Watchdog | `awg-watchdog.timer` / `.service` (script `/usr/local/bin/awg-watchdog`) |
 | Binaries | `/usr/local/bin/{amneziawg-go,awg,awg-quick,awg-client}` |
+| Shared helpers | `/usr/local/lib/awg-vps-kit/common.sh` (sourced by `awg-client`; `update.sh` refreshes it together with the other files and restores it if an update fails) |
 
 ## Managing clients: `awg-client`
 
@@ -334,7 +335,7 @@ one server (AWG on UDP 443, Xray on TCP 443).
 
 ## Development and testing
 
-Pure Bash, no build step. Check syntax with `bash -n install.sh awg-client` (and
+Pure Bash, no build step. Code that more than one script needs (locking, `kv`, backup pruning, the H/S/I1 generators) lives in `lib/common.sh`; `uninstall.sh`, `block-ping` and `awg-watchdog` deliberately stay self-contained. Check syntax with `bash -n install.sh awg-client` (and
 `shellcheck` if installed). `./install.sh --no-service` writes files only, for a dry
 run on a Linux host. CI also runs `tests/test-install.sh` in Debian and Ubuntu containers (install, client management, update, uninstall; no live tunnel) and checks that the built commits equal `upstream.lock`.
 

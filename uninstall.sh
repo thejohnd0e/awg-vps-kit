@@ -36,6 +36,8 @@ DIR=/etc/amnezia/amneziawg
 IF=awg0
 [ "$(id -u)" = 0 ] || die "run as root"
 
+# Self-contained on purpose (no lib/common.sh): this script is also started through `curl | bash`,
+# without a kit checkout, and it removes the kit including that library.
 LOCK_FILE=/run/lock/awg-vps-kit.lock
 take_lock() {  # serialise every operation that reads and writes installed state
   command -v flock >/dev/null || die "flock is required (util-linux)"
@@ -51,7 +53,7 @@ for f in "$DIR" /etc/amnezia /etc/systemd/system/awg-quick@.service /etc/systemd
          /etc/systemd/system/block-ping.service /etc/block-ping /etc/sysctl.d/99-awg.conf \
          /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg-quick \
          /usr/local/bin/awg-client /usr/local/bin/awg-watchdog /usr/local/bin/block-ping \
-         /opt/amneziawg /opt/awg-vps-kit; do
+         /opt/amneziawg /opt/awg-vps-kit /usr/local/lib/awg-vps-kit; do
   [ ! -e "$f" ] || { found=1; break; }
 done
 if [ "$found" = 0 ] && command -v ip >/dev/null && ip link show "$IF" >/dev/null 2>&1; then found=1; fi
@@ -60,7 +62,7 @@ if [ "$found" = 0 ]; then echo "AWG VPS Kit is not installed here: nothing to re
 
 echo "This will stop awg-quick@$IF and remove:"
 echo "  - systemd unit, /etc/sysctl.d/99-awg.conf, nftables table awg_nat, ufw rules (if any)"
-echo "  - /usr/local/bin/{amneziawg-go,awg,awg-quick,awg-client}, /opt/amneziawg and /opt/awg-vps-kit"
+echo "  - /usr/local/bin/{amneziawg-go,awg,awg-quick,awg-client}, /usr/local/lib/awg-vps-kit, /opt/amneziawg and /opt/awg-vps-kit"
 if [ "$KEEP" = 1 ]; then echo "  (keeping /etc/amnezia: keys and clients)"; else echo "  - /etc/amnezia (server keys and ALL client configs)"; fi
 if [ "$YES" = 0 ]; then
   # stdin may be the script itself (curl | bash): ask on the terminal
@@ -102,7 +104,7 @@ rm -rf /etc/block-ping
 if command -v systemctl >/dev/null; then systemctl daemon-reload || true; fi
 rm -f /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg.real /usr/local/bin/awg-quick \
       /usr/local/bin/awg-client /usr/local/bin/awg-watchdog /usr/local/bin/block-ping
-rm -rf /opt/amneziawg /opt/awg-vps-kit
+rm -rf /opt/amneziawg /opt/awg-vps-kit /usr/local/lib/awg-vps-kit
 if [ "$KEEP" = 0 ]; then rm -rf /etc/amnezia; fi
 
 if [ -n "$port" ] && command -v ss >/dev/null; then

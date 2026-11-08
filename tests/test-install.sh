@@ -19,6 +19,47 @@ has "$DIR/nat-up.nft" 'ip saddr 10.79.0.0/24 oifname "eth0" masquerade'
 [ "$(grep -E '^H[1-4] =' "$DIR/awg0.conf" | awk '{print $3}' | sort -u | wc -l)" = 4 ] || fail "H1-H4 not distinct"
 ok "install.sh wrote server files"
 
+# The shared library: installed next to the kit, required by the installed awg-client.
+LIBF=/usr/local/lib/awg-vps-kit/common.sh
+[ "$(stat -c %a "$LIBF")" = 644 ] || fail "$LIBF must be mode 644"
+cmp -s lib/common.sh "$LIBF" || fail "installed library differs from lib/common.sh"
+mv /usr/local/lib/awg-vps-kit /usr/local/lib/awg-vps-kit.away
+if out=$(/usr/local/bin/awg-client list 2>&1); then fail "awg-client must not run without its library"; fi
+mv /usr/local/lib/awg-vps-kit.away /usr/local/lib/awg-vps-kit
+grep -q 'common.sh is missing' <<<"$out" || fail "missing library: unhelpful message: $out"
+lib_check() (
+  . ./lib/common.sh
+  local -a h; local n prev=-1 lo hi f d
+  mapfile -t h < <(awg_h_values 1.0)
+  [ "${#h[@]}" = 4 ] && [ "$(printf '%s\n' "${h[@]}" | sort -u | wc -l)" = 4 ] || fail "lib: 1.0 needs four distinct H values"
+  for n in "${h[@]}"; do { [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 5 ]; } || fail "lib: bad H value $n"; done
+  mapfile -t h < <(awg_h_values 2.0)
+  [ "${#h[@]}" = 4 ] || fail "lib: 2.0 needs four H ranges"
+  for n in "${h[@]}"; do
+    [[ "$n" =~ ^([0-9]+)-([0-9]+)$ ]] || fail "lib: 2.0 H is not a range: $n"
+    lo=${BASH_REMATCH[1]}; hi=${BASH_REMATCH[2]}
+    { [ "$lo" -lt "$hi" ] && [ "$lo" -gt "$prev" ]; } || fail "lib: H ranges overlap or are unordered at $n"
+    prev=$hi
+  done
+  awg_s34_values | grep -Eq '^S3 = ([89]|[1-5][0-9]|6[0-4])$' || fail "lib: S3 out of range"
+  awg_s34_values | grep -Eq '^S4 = ([4-9]|[12][0-9]|3[0-2])$' || fail "lib: S4 out of range"
+  d=$(mktemp -d); f=$d/kvfile
+  printf 'a=1\nI1=<b 0x01>=x\n b =2\n' > "$f"
+  [ "$(kv "$f" I1)" = '<b 0x01>=x' ] || fail "lib: kv must keep '=' inside a value"
+  [ "$(kv "$f" b)" = 2 ] || fail "lib: kv must tolerate spaces around the key"
+  [ -z "$(kv "$f" missing)" ] || fail "lib: kv of a missing key must be empty"
+  [ -z "$(kv "$d/nofile" a)" ] || fail "lib: kv of a missing file must be empty"
+  for n in 1 2 3 4 5 6 7; do : > "$d/bak-2020010$n-000000"; done
+  : > "$d/bak-20261108-120000"; : > "$d/other"
+  prune_backups "$d/bak-"
+  [ "$(find "$d" -name 'bak-*' | wc -l)" = 5 ] || fail "lib: prune_backups must keep 5"
+  [ -e "$d/bak-20261108-120000" ] && [ -e "$d/other" ] || fail "lib: prune_backups removed the wrong file"
+  [ ! -e "$d/bak-20200101-000000" ] || fail "lib: prune_backups kept an old backup"
+  rm -rf "$d"
+)
+lib_check
+ok "shared library: installed, required by awg-client, generators, kv, prune_backups"
+
 [ -x /usr/local/bin/block-ping ] || fail "block-ping not installed"
 block-ping help | grep -q "block-ping on" || fail "block-ping help"
 if block-ping bogus >/dev/null 2>&1; then fail "block-ping must reject unknown commands"; fi
@@ -105,7 +146,7 @@ awg-client list | grep -q carol || fail "clients lost after update"
 ok "update.sh --check and --force keep the config"
 
 ./uninstall.sh --yes >/dev/null
-for p in /etc/amnezia /opt/amneziawg /usr/local/bin/awg /usr/local/bin/awg-client /usr/local/bin/amneziawg-go; do
+for p in /etc/amnezia /opt/amneziawg /usr/local/lib/awg-vps-kit /usr/local/bin/awg /usr/local/bin/awg-client /usr/local/bin/amneziawg-go; do
   [ ! -e "$p" ] || fail "uninstall left $p"
 done
 ok "uninstall.sh removed everything"

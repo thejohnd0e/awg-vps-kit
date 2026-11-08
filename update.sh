@@ -7,8 +7,9 @@
 # Usage: update.sh [options]   (update.sh --help prints the same list)
 set -euo pipefail
 
+# Only die() is needed before the kit checkout is known (--help, bootstrap through `curl | bash`);
+# lib/common.sh is sourced below, once HERE is known, and defines it again together with the rest.
 die() { echo "error: $*" >&2; exit 1; }
-log() { printf '\n==> %s\n' "$*"; }
 
 usage() {
   cat <<'EOF'
@@ -81,17 +82,14 @@ IF=awg0
 UP_GO=https://github.com/amnezia-vpn/amneziawg-go
 UP_TOOLS=https://github.com/amnezia-vpn/amneziawg-tools
 TUNNEL_UNIT=/etc/systemd/system/awg-quick@.service
+LIB_DIR=/usr/local/lib/awg-vps-kit
+
+# shellcheck source=lib/common.sh
+. "$HERE/lib/common.sh"
 
 [ "$(id -u)" = 0 ] || die "run as root"
 [ -f "$DIR/$IF.conf" ] || die "$DIR/$IF.conf not found: nothing installed here (use install.sh)"
 
-LOCK_FILE=/run/lock/awg-vps-kit.lock
-take_lock() {  # serialise every operation that reads and writes installed state
-  command -v flock >/dev/null || die "flock is required (util-linux)"
-  mkdir -p /run/lock
-  exec 9>>"$LOCK_FILE"
-  flock -w 10 9 || die "another kit operation is running (lock: $LOCK_FILE)"
-}
 # --check only reads installed state and must not be blocked by (or block) a real update.
 [ "$CHECK" = 1 ] || take_lock
 
@@ -101,12 +99,14 @@ if [ "$CHECK" = 0 ]; then
   [ -z "$pending" ] || die "unfinished operation at $pending; resolve it before updating"
 fi
 
-installed() { awk -F= -v k="$1" '$1==k{print $2}' "$DIR/versions" 2>/dev/null || true; }
+installed() { kv "$DIR/versions" "$1"; }
 upstream() { git ls-remote "$1" HEAD 2>/dev/null | cut -f1; }
 pin() { printf '%s\n' "$LOCK_TEXT" | awk -F= -v k="$1" '$1 == k && $2 ~ /^[0-9a-f]{40}$/ { print $2; exit }'; }
 # scripts, docs and the recorded kit version always follow the checkout
 refresh_scripts() {
   apply_migrations
+  install -d -m 755 "$LIB_DIR"
+  install -m 644 "$HERE/lib/common.sh" "$LIB_DIR/common.sh"   # before awg-client, which sources it
   install -m 755 "$HERE/awg-client" /usr/local/bin/awg-client
   install -m 755 "$HERE/awg-watchdog" /usr/local/bin/awg-watchdog
   install -m 755 "$HERE/block-ping" /usr/local/bin/block-ping
@@ -124,13 +124,6 @@ refresh_scripts() {
     systemctl daemon-reload 2>/dev/null || true
     systemctl enable --now awg-watchdog.timer >/dev/null 2>&1 || true
   fi
-}
-
-prune_backups() {  # prune_backups <path-prefix>: keep the 5 newest "<prefix>*<YYYYmmdd-HHMMSS>" files (as in awg-client)
-  local f
-  find "$(dirname "$1")" -maxdepth 1 -type f -name "$(basename "$1")*" 2>/dev/null \
-    | sed -n 's/.*\([0-9]\{8\}-[0-9]\{6\}\)$/\1 &/p' | sort -r | tail -n +6 | cut -d' ' -f2- \
-    | while IFS= read -r f; do rm -f -- "$f"; done
 }
 
 # Server config migrations for installations created by older kits. Idempotent and
@@ -278,7 +271,7 @@ managed_files() {
   printf '%s\n' /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg-quick \
     /usr/local/bin/awg-client /usr/local/bin/awg-watchdog /usr/local/bin/block-ping \
     /etc/systemd/system/awg-watchdog.service /etc/systemd/system/awg-watchdog.timer "$TUNNEL_UNIT" \
-    "$DIR/versions" "$DIR/kit-version" "$DIR/README.md"
+    "$LIB_DIR/common.sh" "$DIR/versions" "$DIR/kit-version" "$DIR/README.md"
 }
 snapshot_state() {  # snapshot_state <txn>: remember the current, self-consistent set
   local txn=$1 f
@@ -329,6 +322,7 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
     printf 'amneziawg-go=unknown\namneziawg-tools=unknown\n' > "$txn/new/versions"
     echo "warning: $BIN_DIR has no versions file; recording unknown versions"
   fi
+  install -m 644 "$HERE/lib/common.sh" "$txn/new/common.sh"
   install -m 755 "$HERE/awg-client" "$txn/new/awg-client"
   install -m 755 "$HERE/awg-watchdog" "$txn/new/awg-watchdog"
   install -m 755 "$HERE/block-ping" "$txn/new/block-ping"
@@ -347,6 +341,7 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
     done
     install -m 644 "$txn/new/versions" "$DIR/versions" || return 1
     install -m 644 "$txn/new/kit-version" "$DIR/kit-version" || return 1
+    install -d -m 755 "$LIB_DIR" && install -m 644 "$txn/new/common.sh" "$LIB_DIR/common.sh" || return 1   # before awg-client
     install -m 755 "$txn/new/awg-client" /usr/local/bin/awg-client.new \
       && mv -f /usr/local/bin/awg-client.new /usr/local/bin/awg-client || return 1
     install -m 755 "$txn/new/awg-watchdog" /usr/local/bin/awg-watchdog || return 1

@@ -7,7 +7,14 @@ CONF=$DIR/$IF.conf
 CL=$DIR/clients
 TXN_ROOT=$DIR/transactions
 
-die() { echo "error: $*" >&2; exit 1; }
+
+# Shared helpers (die, kv, take_lock, prune_backups, obfuscation values): the lib/ next to this
+# script in a kit checkout, otherwise the copy install.sh/update.sh put on the server.
+LIB=$(dirname "$(readlink -f "$0")")/lib/common.sh
+[ -r "$LIB" ] || LIB=/usr/local/lib/awg-vps-kit/common.sh
+if [ ! -r "$LIB" ]; then echo "error: $LIB is missing; reinstall the kit or run update.sh" >&2; exit 1; fi
+# shellcheck source=lib/common.sh
+. "$LIB"
 
 usage() {
 cat <<'EOF'
@@ -45,11 +52,6 @@ Notes:
 EOF
 }
 
-kv() {  # kv <file> <key>: value from a key=value file, empty if missing
-  # Everything after the first '=' belongs to the value (I-signatures may contain '=');
-  # spaces around the key are tolerated for hand-edited files.
-  awk -F= -v k="$2" '{ key=$1; sub(/^[ \t]+/,"",key); sub(/[ \t]+$/,"",key); if (key==k) { sub(/^[^=]*=/,""); print; exit } }' "$1" 2>/dev/null || true
-}
 format_endpoint() {  # format_endpoint <host> <port>; brackets bare IPv6 literals
   case "$1" in
     \[*\]) printf '%s:%s\n' "$1" "$2" ;;
@@ -77,13 +79,6 @@ case "$cmd" in version|-v|--version) show_version; exit 0 ;; esac
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 umask 077
 
-LOCK_FILE=/run/lock/awg-vps-kit.lock
-take_lock() {  # serialise every operation that reads and writes installed state
-  command -v flock >/dev/null || { echo "error: flock is required (util-linux)" >&2; exit 1; }
-  mkdir -p /run/lock
-  exec 9>>"$LOCK_FILE"
-  flock -w 10 9 || { echo "error: another kit operation is running (lock: $LOCK_FILE)" >&2; exit 1; }
-}
 require_conf() { [ -f "$CONF" ] || { echo "no $CONF" >&2; exit 1; }; }
 ensure_dirs() { mkdir -p "$CL" "$TXN_ROOT"; chmod 700 "$TXN_ROOT"; }
 
@@ -130,20 +125,11 @@ AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
 }
-rnd32() { local v=0; while [ "$v" -lt 5 ]; do v=$(od -An -N4 -tu4 /dev/urandom | tr -d " "); done; echo "$v"; }
-# Server fields of a protocol version, S3/S4/H1-H4 lines (same rules as install.sh).
+# Server fields of a protocol version: S3/S4 (2.0 only) and H1-H4, same generator as install.sh.
 protocol_fields() {
-  local v i; local -a H R
-  if [ "$1" = 2.0 ]; then
-    echo "S3 = $(shuf -i 8-64 -n 1)"; echo "S4 = $(shuf -i 4-32 -n 1)"
-    R=(); while [ ${#R[@]} -lt 8 ]; do v=$(rnd32); case " ${R[*]} " in *" $v "*) ;; *) R+=("$v") ;; esac; done
-    mapfile -t R < <(printf '%s
-' "${R[@]}" | sort -n)
-    H=("${R[0]}-${R[1]}" "${R[2]}-${R[3]}" "${R[4]}-${R[5]}" "${R[6]}-${R[7]}")
-  else
-    H=(); while [ ${#H[@]} -lt 4 ]; do v=$(rnd32); case " ${H[*]} " in *" $v "*) ;; *) H+=("$v") ;; esac; done
-  fi
-  for i in 0 1 2 3; do echo "H$((i+1)) = ${H[$i]}"; done
+  local i=1 h
+  [ "$1" != 2.0 ] || awg_s34_values
+  while IFS= read -r h; do echo "H$i = $h"; i=$((i+1)); done < <(awg_h_values "$1")
 }
 peer_ip() {  # tunnel address of the peer commented "# <name>"
   awk -v n="# $1" '/^\[Peer\]/{p=1;m=0;next} p&&$0==n{m=1} p&&m&&/^AllowedIPs/{sub(/\/32.*/,"",$3);print $3;exit}' "$CONF"
@@ -218,13 +204,6 @@ on_signal() {
 }
 trap on_signal INT TERM
 
-prune_backups() {  # prune_backups <path-prefix>: keep the 5 newest "<prefix>*<YYYYmmdd-HHMMSS>" files
-  # by the stamp in the name: cp -p keeps the original's mtime, so mtime says nothing
-  local f
-  find "$(dirname "$1")" -maxdepth 1 -type f -name "$(basename "$1")*" 2>/dev/null \
-    | sed -n 's/.*\([0-9]\{8\}-[0-9]\{6\}\)$/\1 &/p' | sort -r | tail -n +6 | cut -d' ' -f2- \
-    | while IFS= read -r f; do rm -f -- "$f"; done
-}
 drop_peer() {  # drop_peer <name> < conf: print conf without the [Peer] block commented "# <name>"
   # Line based: a block starts at any "[Section]" line, so peers that are not separated
   # by blank lines (hand-edited files) are still told apart. Trailing blank lines are trimmed.
@@ -247,7 +226,7 @@ make_protocol_file() {  # make_protocol_file <version> <source> <dest>: keep eve
   done < "$src"
   [ "$seen" = 1 ] || printf 'protocol=%s\n' "$ver" >> "$dst"
   if [ "$ver" = 1.5 ] && ! grep -q '^I1=' "$dst"; then
-    echo 'I1=<b 0xc00000000108><r 8><b 0x00><r 64>' >> "$dst"
+    echo "I1=$AWG_I1_DEFAULT" >> "$dst"
   fi
 }
 
