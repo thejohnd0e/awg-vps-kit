@@ -1,4 +1,7 @@
 # AWG VPS Kit
+
+**English** · [Русский](README.ru.md)
+
 [![CI](https://github.com/thejohnd0e/awg-vps-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/thejohnd0e/awg-vps-kit/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Last commit](https://img.shields.io/github/last-commit/thejohnd0e/awg-vps-kit)](https://github.com/thejohnd0e/awg-vps-kit/commits/master) ![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white) ![Platform](https://img.shields.io/badge/platform-Debian%20%7C%20Ubuntu-A81D33?logo=debian&logoColor=white) ![Protocol](https://img.shields.io/badge/protocol-AmneziaWG%20(UDP)-blue)
 
 AmneziaWG (userspace `amneziawg-go`) on UDP 443 and the `awg-client` command to manage
