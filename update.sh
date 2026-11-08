@@ -19,6 +19,8 @@ Server config and clients are not touched. Run as root.
   --force                   rebuild binaries even if up to date
   --bin-dir DIR             use prebuilt amneziawg-go, awg, awg-quick from DIR (skip build)
   --no-restart              do not restart awg-quick@awg0 (new binaries apply after restart)
+  --upstream-head           follow the newest amneziawg-go/-tools instead of the reviewed commits in
+                            upstream.lock (unreviewed code, runs as root)
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/update.sh | bash -s -- --check
@@ -31,7 +33,7 @@ need_value() {
   case "$2" in --*) die "$1 requires a value" ;; esac
 }
 
-CHECK=0; FORCE=0; BIN_DIR=; NO_RESTART=0; SKIP_KIT=0
+CHECK=0; FORCE=0; BIN_DIR=; NO_RESTART=0; SKIP_KIT=0; UPSTREAM_HEAD=0
 ORIG_ARGS=("$@")
 for arg in "$@"; do [ "$arg" != --check ] || CHECK=1; done
 
@@ -41,6 +43,7 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1; shift ;;
     --bin-dir) need_value "$@"; BIN_DIR=$2; shift 2 ;;
     --no-restart) NO_RESTART=1; shift ;;
+    --upstream-head) UPSTREAM_HEAD=1; shift ;;
     --skip-kit) SKIP_KIT=1; shift ;;   # internal: set after the kit was pulled
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -100,6 +103,7 @@ fi
 
 installed() { awk -F= -v k="$1" '$1==k{print $2}' "$DIR/versions" 2>/dev/null || true; }
 upstream() { git ls-remote "$1" HEAD 2>/dev/null | cut -f1; }
+pin() { printf '%s\n' "$LOCK_TEXT" | awk -F= -v k="$1" '$1 == k && $2 ~ /^[0-9a-f]{40}$/ { print $2; exit }'; }
 # scripts, docs and the recorded kit version always follow the checkout
 refresh_scripts() {
   apply_migrations
@@ -196,10 +200,27 @@ fi
 # ------------------------------------------------------------- binaries
 bin_outdated=0
 latest="kit $curver"
+# The commits to be installed come from upstream.lock of the kit version that will be in place:
+# when the kit is about to be pulled, that is the lock of the new version (the real run restarts
+# after the pull and recomputes everything from the pulled files).
+LOCK_TEXT=$(cat "$HERE/upstream.lock" 2>/dev/null || true)
+if [ "$behind" -gt 0 ]; then
+  newlock=$(git -C "$HERE" show '@{u}:upstream.lock' 2>/dev/null || true)
+  [ -z "$newlock" ] || LOCK_TEXT=$newlock
+fi
 for comp in go tools; do
   if [ "$comp" = go ]; then name=amneziawg-go; url=$UP_GO; else name=amneziawg-tools; url=$UP_TOOLS; fi
-  have=$(installed "$name"); want=$(upstream "$url" || true)
-  [ -n "$want" ] || die "cannot reach $url (git ls-remote failed); check network access to GitHub"
+  have=$(installed "$name")
+  if [ "$UPSTREAM_HEAD" = 1 ]; then
+    want=$(upstream "$url" || true)
+    [ -n "$want" ] || die "cannot reach $url (git ls-remote failed); check network access to GitHub"
+  else
+    want=$(pin "$name")
+    [ -n "$want" ] || die "no valid $name commit in upstream.lock (restore the file from the kit, or pass --upstream-head)"
+    # information only: the pin is the supported state, newer upstream code is not reviewed yet
+    head=$(upstream "$url" || true)
+    [ -z "$head" ] || [ "$head" = "$want" ] || echo "note: $name upstream HEAD is ${head:0:7}, the reviewed commit is ${want:0:7} (not installed until upstream.lock moves)"
+  fi
   if [ "$have" = "$want" ]; then
     echo "$name: up to date (${have:0:7})"
     latest+=", $name ${have:0:7}"
@@ -285,7 +306,9 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
     BIN_DIR=$(mktemp -d /var/tmp/awg-update.XXXXXX)
     trap 'rm -rf "$BIN_DIR"' EXIT
     log "Building new binaries (a few minutes)"
-    bash "$HERE/install.sh" --build-only "$BIN_DIR" >/dev/null
+    build_args=(--build-only "$BIN_DIR")
+    [ "$UPSTREAM_HEAD" = 0 ] || build_args+=(--upstream-head)
+    bash "$HERE/install.sh" "${build_args[@]}" >/dev/null
   fi
   for f in amneziawg-go awg awg-quick; do [ -x "$BIN_DIR/$f" ] || die "missing $BIN_DIR/$f"; done
   # the build took minutes: the service may have died meanwhile

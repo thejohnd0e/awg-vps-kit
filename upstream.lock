@@ -1,0 +1,4 @@
+# Reviewed upstream commits that install.sh and update.sh build (README: "Upstream versions").
+# Change them with tools/bump-upstream.sh, after a build and the test suites passed. Two keys, 40-hex commits.
+amneziawg-go=b5928efb6ca19f0153958460c3d141f04abc5c2e
+amneziawg-tools=ee0f0a9aa34ff0a0da4b3433b9512781cfe02843

@@ -24,6 +24,8 @@ Run as root on a fresh server. See README.md.
   --no-service          write files only: no systemd, sysctl, firewall (for testing)
   --block-ping          also drop incoming ping on the uplink (runs block-ping on; see README)
   --allow-outdated      do not stop if this git checkout is behind upstream
+  --upstream-head       build the newest amneziawg-go/-tools instead of the reviewed
+                        commits in upstream.lock (unreviewed code, runs as root)
 EOF
 }
 
@@ -66,7 +68,7 @@ subnet_conflicts() {  # subnet_conflicts <a.b.c>: "error|warn <route>" per IPv4 
   done < <(ip -4 route show 2>/dev/null)
 }
 
-SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; PROTOCOL=; NO_SERVICE=0; ALLOW_OUTDATED=0; BLOCK_PING=0
+SUBNET=10.77.0; PORT=443; ENDPOINT=; WAN_IF=; BIN_DIR=; BUILD_ONLY=; FIRST=; PROTOCOL=; NO_SERVICE=0; ALLOW_OUTDATED=0; BLOCK_PING=0; UPSTREAM_HEAD=0
 ORIG_ARGS=("$@")
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -81,6 +83,7 @@ while [ $# -gt 0 ]; do
     --no-service) NO_SERVICE=1; shift ;;
     --block-ping) BLOCK_PING=1; shift ;;
     --allow-outdated) ALLOW_OUTDATED=1; shift ;;
+    --upstream-head) UPSTREAM_HEAD=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -179,9 +182,32 @@ if [ -z "$BUILD_ONLY" ] && [ "$ALLOW_OUTDATED" = 0 ] && command -v git >/dev/nul
 fi
 
 # ---------------------------------------------------------------- build
+# The reviewed upstream commit of a component, from the lock file shipped with the kit.
+pinned_commit() {  # pinned_commit <amneziawg-go|amneziawg-tools>: 40-hex commit or nothing
+  awk -F= -v k="$1" '$1 == k && $2 ~ /^[0-9a-f]{40}$/ { print $2; exit }' "$HERE/upstream.lock" 2>/dev/null || true
+}
+fetch_upstream() {  # fetch_upstream <name> <url> <dir>: the pinned commit checked out in <dir> (HEAD with --upstream-head)
+  local name=$1 url=$2 dir=$3 want
+  if [ "$UPSTREAM_HEAD" = 1 ]; then
+    git clone -q --depth 1 "$url" "$dir" || die "cannot clone $url"
+    return 0
+  fi
+  want=$(pinned_commit "$name")
+  [ -n "$want" ] || die "no valid $name commit in $HERE/upstream.lock (restore the file, or pass --upstream-head)"
+  git init -q "$dir"
+  # GitHub serves any commit by its id; a full clone is the fallback for servers that do not
+  if ! { git -C "$dir" fetch -q --depth 1 "$url" "$want" && git -C "$dir" checkout -q FETCH_HEAD; } 2>/dev/null; then
+    rm -rf "$dir"
+    if ! { git clone -q "$url" "$dir" && git -C "$dir" checkout -q "$want"; }; then
+      die "cannot fetch $name commit $want from $url"
+    fi
+  fi
+  [ "$(git -C "$dir" rev-parse HEAD)" = "$want" ] || die "$name: checked out the wrong commit (wanted $want)"
+}
+
 build_binaries() (  # build_binaries <outdir>; subshell so cleanup covers every exit path
   set -euo pipefail
-  local out=$1 src go_bin need have arch json file sha
+  local out=$1 src go_bin need have arch json file sha how
   mkdir -p "$out"
   log "Installing build dependencies"
   apt-get update -qq
@@ -189,10 +215,11 @@ build_binaries() (  # build_binaries <outdir>; subshell so cleanup covers every 
 
   src=$(mktemp -d /var/tmp/awg-build.XXXXXX)
   trap 'rm -rf "$src"' EXIT
-  git clone -q --depth 1 https://github.com/amnezia-vpn/amneziawg-go "$src/awg-go"
-  git clone -q --depth 1 https://github.com/amnezia-vpn/amneziawg-tools "$src/awg-tools"
-  echo "amneziawg-go:    $(git -C "$src/awg-go" log -1 --format='%h %ad' --date=short)"
-  echo "amneziawg-tools: $(git -C "$src/awg-tools" log -1 --format='%h %ad' --date=short)"
+  fetch_upstream amneziawg-go https://github.com/amnezia-vpn/amneziawg-go "$src/awg-go"
+  fetch_upstream amneziawg-tools https://github.com/amnezia-vpn/amneziawg-tools "$src/awg-tools"
+  how="pinned in upstream.lock"; [ "$UPSTREAM_HEAD" = 0 ] || how="upstream HEAD, not reviewed"
+  echo "amneziawg-go:    $(git -C "$src/awg-go" log -1 --format='%h %ad' --date=short) ($how)"
+  echo "amneziawg-tools: $(git -C "$src/awg-tools" log -1 --format='%h %ad' --date=short) ($how)"
 
   # Go: distro package if it is new enough, otherwise the official tarball.
   need=$(awk '$1=="go"{print $2; exit}' "$src/awg-go/go.mod")

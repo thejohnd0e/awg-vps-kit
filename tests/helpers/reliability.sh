@@ -81,8 +81,8 @@ stub_git_version() {
 case "$1" in
   ls-remote)
     case "$2" in
-      *amneziawg-go) sed -n 's/^amneziawg-go=//p' /etc/amnezia/amneziawg/versions ;;
-      *amneziawg-tools) sed -n 's/^amneziawg-tools=//p' /etc/amnezia/amneziawg/versions ;;
+      *amneziawg-go) if [ -n "${STUB_HEAD_GO:-}" ]; then echo "$STUB_HEAD_GO"; else sed -n 's/^amneziawg-go=//p' /etc/amnezia/amneziawg/versions; fi ;;
+      *amneziawg-tools) if [ -n "${STUB_HEAD_TOOLS:-}" ]; then echo "$STUB_HEAD_TOOLS"; else sed -n 's/^amneziawg-tools=//p' /etc/amnezia/amneziawg/versions; fi ;;
       *) echo 0000000000000000000000000000000000000000 ;;
     esac
     exit 0 ;;

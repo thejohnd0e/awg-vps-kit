@@ -7,7 +7,7 @@
 #   AWG_TEST_ALLOW_DESTRUCTIVE=1 tests/test-reliability.sh BIN_DIR [CASE]
 #
 # BIN_DIR holds amneziawg-go, awg, awg-quick built by `install.sh --build-only`.
-# CASE: cli | peers | protocol | update | lock | bootstrap | cleanup | watchdog | mss | all
+# CASE: cli | peers | protocol | update | lock | bootstrap | cleanup | watchdog | mss | pins | all
 # shellcheck disable=SC2119  # fresh_install passes extra options only when a case needs them
 set -euo pipefail
 
@@ -131,7 +131,8 @@ case_cleanup() {
   mkdir -p "$tmp/bin"
   cat > "$tmp/bin/git" <<'EOS'
 #!/bin/sh
-case "$1" in clone) echo "stub: clone refused" >&2; exit 1 ;; esac
+# the pinned fetch uses `git fetch` (then `git clone` as a fallback); both must fail
+for a in "$@"; do case "$a" in clone|fetch) echo "stub: $a refused" >&2; exit 1 ;; esac; done
 exec /usr/bin/git "$@"
 EOS
   cat > "$tmp/bin/apt-get" <<'EOS'
@@ -145,7 +146,7 @@ EOS
   PATH="$tmp/bin:$PATH" "$ROOT/install.sh" --build-only "$tmp/out" >/dev/null 2>&1
   local rc=$?
   set -e
-  [ "$rc" -ne 0 ] || fail "a failed clone must fail the build"
+  [ "$rc" -ne 0 ] || fail "a failed fetch must fail the build"
   after=$(find /var/tmp -maxdepth 1 -name 'awg-build.*' | sort)
   [ "$before" = "$after" ] || fail "failed build left a temporary directory in /var/tmp"
   rm -rf "$tmp"
@@ -588,13 +589,73 @@ case_mss() {
   ok "mss: baseline 1380, clamped 1240 both ways, small MSS untouched, reload idempotent"
 }
 
+case_pins() {
+  echo "# pins"
+  fresh_install
+  stub_git_version
+  local lock="$ROOT/upstream.lock" lgo ltools out rc
+  [ "$(grep -Ec '^amneziawg-(go|tools)=[0-9a-f]{40}$' "$lock")" = 2 ] || fail "upstream.lock must hold exactly two 40-hex commits"
+  lgo=$(awk -F= '$1=="amneziawg-go"{print $2}' "$lock"); ltools=$(awk -F= '$1=="amneziawg-tools"{print $2}' "$lock")
+  run_check() { out=$("$ROOT/update.sh" --check "$@" 2>&1) && rc=0 || rc=$?; }
+  printf 'amneziawg-go=%s\namneziawg-tools=%s\n' "$lgo" "$ltools" > "$DIR/versions"
+
+  # installed = pinned: up to date, even though upstream HEAD moved on (only a note)
+  run_check
+  [ "$rc" = 0 ] || fail "pinned versions installed: --check must exit 0 (got $rc: $out)"
+  STUB_HEAD_GO=1111111111111111111111111111111111111111 run_check
+  [ "$rc" = 0 ] || fail "a newer upstream HEAD alone must not request an update (got $rc: $out)"
+  grep -q "note: amneziawg-go upstream HEAD is 1111111, the reviewed commit is ${lgo:0:7}" <<<"$out" || fail "no note about the unreviewed upstream HEAD: $out"
+  if grep -q -- '->' <<<"$out"; then fail "an unreviewed HEAD must not be offered as an update: $out"; fi
+
+  # installed != pinned: the pin is what gets installed, not HEAD
+  printf 'amneziawg-go=%s\namneziawg-tools=%s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$ltools" > "$DIR/versions"
+  STUB_HEAD_GO=1111111111111111111111111111111111111111 run_check
+  [ "$rc" = 10 ] || fail "installed differs from the pin: --check must exit 10 (got $rc: $out)"
+  grep -q "amneziawg-go: aaaaaaa -> ${lgo:0:7}" <<<"$out" || fail "update must target the pinned commit: $out"
+
+  # --upstream-head follows HEAD instead
+  printf 'amneziawg-go=%s\namneziawg-tools=%s\n' "$lgo" "$ltools" > "$DIR/versions"
+  STUB_HEAD_GO=1111111111111111111111111111111111111111 run_check --upstream-head
+  [ "$rc" = 10 ] || fail "--upstream-head with a newer HEAD must exit 10 (got $rc: $out)"
+  grep -q "amneziawg-go: ${lgo:0:7} -> 1111111" <<<"$out" || fail "--upstream-head must target HEAD: $out"
+
+  # a damaged lock stops the update instead of falling back to HEAD
+  cp -p "$lock" /tmp/awg-lock.bak
+  printf 'amneziawg-go=nonsense\n' > "$lock"
+  run_check
+  cp -p /tmp/awg-lock.bak "$lock"
+  [ "$rc" != 0 ] && [ "$rc" != 10 ] || fail "an invalid upstream.lock must be an error (got $rc: $out)"
+  grep -q 'no valid amneziawg-go commit in upstream.lock' <<<"$out" || fail "missing explanation for an invalid lock: $out"
+
+  # A kit update that moves the pins: --check must report what the new kit version would install.
+  local base=/tmp/awg-pins origin work pusher
+  origin=$base/origin.git; work=$base/work; pusher=$base/pusher
+  rm -rf "$base"; mkdir -p "$base"
+  git init -q --bare "$origin"
+  git init -q "$work"; git -C "$work" checkout -q -b master 2>/dev/null || true
+  ( cd "$ROOT" && tar --exclude=.git -cf - . ) | ( cd "$work" && tar -xf - --no-same-owner --no-overwrite-dir )
+  git -C "$work" add -A
+  git -C "$work" -c user.name=t -c user.email=t@example.invalid commit -q -m base
+  git -C "$work" remote add origin "$origin"
+  git -C "$work" push -q -u origin master 2>/dev/null
+  git clone -q "$origin" "$pusher" 2>/dev/null
+  sed -i "s/^amneziawg-go=.*/amneziawg-go=2222222222222222222222222222222222222222/" "$pusher/upstream.lock"
+  git -C "$pusher" -c user.name=t -c user.email=t@example.invalid commit -q -am "move the pin"
+  git -C "$pusher" push -q origin HEAD:master 2>/dev/null
+  out=$("$work/update.sh" --check 2>&1) && rc=0 || rc=$?
+  [ "$rc" = 10 ] || fail "a kit update that moves the pin must exit 10 (got $rc: $out)"
+  grep -q "amneziawg-go: ${lgo:0:7} -> 2222222" <<<"$out" || fail "--check must use the upstream.lock of the new kit version: $out"
+  rm -rf "$base" /tmp/awg-lock.bak
+  ok "pins: installed vs pinned vs HEAD, --upstream-head, invalid lock, pin moved by a kit update"
+}
+
 if [ "$CASE" = all ]; then
-  for c in cli bootstrap cleanup lock peers protocol update watchdog mss; do
+  for c in cli bootstrap cleanup lock peers protocol update watchdog mss pins; do
     "case_$c"
   done
 else
   case "$CASE" in
-    cli|bootstrap|cleanup|lock|peers|protocol|update|watchdog|mss) "case_$CASE" ;;
+    cli|bootstrap|cleanup|lock|peers|protocol|update|watchdog|mss|pins) "case_$CASE" ;;
     *) echo "unknown case: $CASE" >&2; exit 2 ;;
   esac
 fi

@@ -7,3 +7,4 @@ awg-watchdog.timer text eol=lf
 block-ping text eol=lf
 *.md text eol=lf
 awg-quick@.service text eol=lf
+upstream.lock text eol=lf

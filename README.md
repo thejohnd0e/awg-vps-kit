@@ -254,7 +254,7 @@ curl -fsSL https://raw.githubusercontent.com/thejohnd0e/awg-vps-kit/master/updat
 ```
 
 It compares the installed versions (kit `VERSION`, `amneziawg-go` and `amneziawg-tools`
-commits; see `awg-client version`) with the latest ones and prints either
+commits; see `awg-client version`) with the ones the kit ships (see "Upstream versions" below) and prints either
 `Update available: ... ; updating.` or `Latest version is installed (...)`.
 The server config, keys and clients are not touched. A binary update restarts the
 service (clients reconnect in a few seconds) only when the running interface is usable
@@ -267,8 +267,24 @@ is stopped) the files are installed but the runtime is not verified, and the scr
 Servers installed before `update.sh` existed have no recorded
 versions and are reported as "unknown", so the first update rebuilds. Options go after
 `bash -s --`: `--check` (report only; exit code 0 = latest installed, 10 = update available;
-does not pull the kit or change installed files), `--force`, `--bin-dir DIR`, `--no-restart`.
+does not pull the kit or change installed files), `--force`, `--bin-dir DIR`, `--no-restart`,
+`--upstream-head` (see below).
 An update also installs and enables `awg-watchdog.timer` on servers created by an older kit.
+
+### Upstream versions
+
+`amneziawg-go` and `amneziawg-tools` run as root, so the kit does not build whatever their
+default branch holds today: `upstream.lock` lists the two reviewed commits, and `install.sh` and
+`update.sh` build exactly those (the build prints `pinned in upstream.lock`). A new upstream
+commit reaches servers only after the kit itself moves the lock. `update.sh` and `update.sh --check`
+print a `note:` when upstream has newer commits than the reviewed ones; that is information, not an
+update. The lock comes with the kit version, so `--check` reports what the *next* kit version would
+install when the kit is behind.
+
+`--upstream-head` (on `install.sh` and `update.sh`) builds the newest upstream code instead. It is
+unreviewed; the next plain `update.sh` brings the server back to the pinned commits. Maintainers
+move the pins with `tools/bump-upstream.sh` (shows the difference and compare links; `--apply` only
+edits `upstream.lock`, after which the build and the test suites have to be run before committing).
 
 ## Uninstall
 
@@ -320,7 +336,7 @@ one server (AWG on UDP 443, Xray on TCP 443).
 
 Pure Bash, no build step. Check syntax with `bash -n install.sh awg-client` (and
 `shellcheck` if installed). `./install.sh --no-service` writes files only, for a dry
-run on a Linux host. CI also runs `tests/test-install.sh` in Debian and Ubuntu containers (install, client management, update, uninstall; no live tunnel).
+run on a Linux host. CI also runs `tests/test-install.sh` in Debian and Ubuntu containers (install, client management, update, uninstall; no live tunnel) and checks that the built commits equal `upstream.lock`.
 
 ## License
 

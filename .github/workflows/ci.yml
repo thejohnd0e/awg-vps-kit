@@ -14,9 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Syntax check
-        run: bash -n install.sh update.sh uninstall.sh awg-client awg-watchdog block-ping tests/test-install.sh tests/test-reliability.sh tests/helpers/reliability.sh
+        run: bash -n install.sh update.sh uninstall.sh awg-client awg-watchdog block-ping tools/bump-upstream.sh tests/test-install.sh tests/test-reliability.sh tests/helpers/reliability.sh
       - name: ShellCheck
-        run: shellcheck install.sh update.sh uninstall.sh awg-client awg-watchdog block-ping tests/test-install.sh tests/test-reliability.sh tests/helpers/reliability.sh
+        run: shellcheck install.sh update.sh uninstall.sh awg-client awg-watchdog block-ping tools/bump-upstream.sh tests/test-install.sh tests/test-reliability.sh tests/helpers/reliability.sh
 
   install-test:
     runs-on: ubuntu-24.04
@@ -29,6 +29,11 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build binaries (tests the build path)
         run: bash install.sh --build-only /opt/awg-bin
+      - name: Built commits match upstream.lock
+        run: |
+          grep -v '^#' upstream.lock | sort > /tmp/lock.sorted
+          sort /opt/awg-bin/versions > /tmp/built.sorted
+          diff /tmp/lock.sorted /tmp/built.sorted
       - name: Install and client management
         run: bash tests/test-install.sh /opt/awg-bin
       - name: Reliability checks
