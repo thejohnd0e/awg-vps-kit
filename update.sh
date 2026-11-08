@@ -101,7 +101,7 @@ fi
 
 installed() { kv "$DIR/versions" "$1"; }
 upstream() { git ls-remote "$1" HEAD 2>/dev/null | cut -f1; }
-pin() { printf '%s\n' "$LOCK_TEXT" | awk -F= -v k="$1" '$1 == k && $2 ~ /^[0-9a-f]{40}$/ { print $2; exit }'; }
+pin() { printf '%s\n' "$LOCK_TEXT" | awk -F= -v k="$1" '$1 == k && length($2) == 40 && $2 ~ /^[0-9a-f]+$/ { print $2; exit }'; }
 # scripts, docs and the recorded kit version always follow the checkout
 refresh_scripts() {
   apply_migrations

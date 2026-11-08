@@ -183,7 +183,7 @@ fi
 # ---------------------------------------------------------------- build
 # The reviewed upstream commit of a component, from the lock file shipped with the kit.
 pinned_commit() {  # pinned_commit <amneziawg-go|amneziawg-tools>: 40-hex commit or nothing
-  awk -F= -v k="$1" '$1 == k && $2 ~ /^[0-9a-f]{40}$/ { print $2; exit }' "$HERE/upstream.lock" 2>/dev/null || true
+  awk -F= -v k="$1" '$1 == k && length($2) == 40 && $2 ~ /^[0-9a-f]+$/ { print $2; exit }' "$HERE/upstream.lock" 2>/dev/null || true
 }
 fetch_upstream() {  # fetch_upstream <name> <url> <dir>: the pinned commit checked out in <dir> (HEAD with --upstream-head)
   local name=$1 url=$2 dir=$3 want

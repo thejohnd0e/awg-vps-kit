@@ -580,11 +580,12 @@ case_mss() {
   ip -n awgs addr add 198.51.100.2/24 dev sv0; ip -n awgs link set sv0 mtu 1500 up; ip -n awgs link set lo up
   ip -n awgc route add default via 10.79.0.1
   ip -n awgs route add 10.79.0.0/24 via 198.51.100.1
-  ip netns exec awgr sysctl -q -w net.ipv4.ip_forward=1
+  ns_sysctl() { ip netns exec "$1" sh -c "echo $3 > /proc/sys/${2//.//}"; }   # no procps needed (not in minimal images)
+  ns_sysctl awgr net.ipv4.ip_forward 1
   # ss reports the usable MSS (advertised minus the 12 bytes of the timestamp option): switch the
   # option off on both ends so the numbers below are the MSS values carried in the SYN
-  ip netns exec awgc sysctl -q -w net.ipv4.tcp_timestamps=0
-  ip netns exec awgs sysctl -q -w net.ipv4.tcp_timestamps=0
+  ns_sysctl awgc net.ipv4.tcp_timestamps 0
+  ns_sysctl awgs net.ipv4.tcp_timestamps 0
 
   # the MSS of the server-side and the client-side socket of one connection
   mss_probe() {  # mss_probe <port>: prints "<server mss> <client mss>"
@@ -655,7 +656,7 @@ case_pins() {
   printf 'amneziawg-go=nonsense\n' > "$lock"
   run_check
   cp -p /tmp/awg-lock.bak "$lock"
-  [ "$rc" != 0 ] && [ "$rc" != 10 ] || fail "an invalid upstream.lock must be an error (got $rc: $out)"
+  { [ "$rc" != 0 ] && [ "$rc" != 10 ]; } || fail "an invalid upstream.lock must be an error (got $rc: $out)"
   grep -q 'no valid amneziawg-go commit in upstream.lock' <<<"$out" || fail "missing explanation for an invalid lock: $out"
 
   # A kit update that moves the pins: --check must report what the new kit version would install.

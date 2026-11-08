@@ -31,7 +31,7 @@ lib_check() (
   . ./lib/common.sh
   local -a h; local n prev=-1 lo hi f d
   mapfile -t h < <(awg_h_values 1.0)
-  [ "${#h[@]}" = 4 ] && [ "$(printf '%s\n' "${h[@]}" | sort -u | wc -l)" = 4 ] || fail "lib: 1.0 needs four distinct H values"
+  { [ "${#h[@]}" = 4 ] && [ "$(printf '%s\n' "${h[@]}" | sort -u | wc -l)" = 4 ]; } || fail "lib: 1.0 needs four distinct H values"
   for n in "${h[@]}"; do { [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 5 ]; } || fail "lib: bad H value $n"; done
   mapfile -t h < <(awg_h_values 2.0)
   [ "${#h[@]}" = 4 ] || fail "lib: 2.0 needs four H ranges"
@@ -53,7 +53,7 @@ lib_check() (
   : > "$d/bak-20261108-120000"; : > "$d/other"
   prune_backups "$d/bak-"
   [ "$(find "$d" -name 'bak-*' | wc -l)" = 5 ] || fail "lib: prune_backups must keep 5"
-  [ -e "$d/bak-20261108-120000" ] && [ -e "$d/other" ] || fail "lib: prune_backups removed the wrong file"
+  { [ -e "$d/bak-20261108-120000" ] && [ -e "$d/other" ]; } || fail "lib: prune_backups removed the wrong file"
   [ ! -e "$d/bak-20200101-000000" ] || fail "lib: prune_backups kept an old backup"
   rm -rf "$d"
 )
@@ -154,7 +154,7 @@ awg-client dns 9.9.9.9,149.112.112.112 >/dev/null
 [ "$(awg-client dns)" = "9.9.9.9, 149.112.112.112" ] || fail "dns must be stored normalised"
 out=$(awg-client show bob); grep -q '^DNS = 9.9.9.9, 149.112.112.112$' <<<"$out" || fail "show must use the configured DNS"
 awg-client dns default >/dev/null
-[ "$(awg-client dns)" = 1.1.1.1 ] && [ ! -e "$DIR/client-dns" ] || fail "dns default must restore 1.1.1.1"
+{ [ "$(awg-client dns)" = 1.1.1.1 ] && [ ! -e "$DIR/client-dns" ]; } || fail "dns default must restore 1.1.1.1"
 ok "client DNS: default, validation, applied to show, reset"
 
 # --- rename: only the name changes
@@ -165,7 +165,7 @@ awg-client rename bob bobx >/dev/null
 names=$(awg-client list | cut -f2 | sort | tr '\n' ' ')
 [ "$names" = "bobby bobx carol " ] || fail "rename touched the wrong peers: $names"
 for e in key pub psk conf; do
-  [ ! -e "$DIR/clients/bob.$e" ] && [ -e "$DIR/clients/bobx.$e" ] || fail "rename must move clients/bob.$e"
+  { [ ! -e "$DIR/clients/bob.$e" ] && [ -e "$DIR/clients/bobx.$e" ]; } || fail "rename must move clients/bob.$e"
 done
 out=$(awg-client show bobx)
 grep -q "^PrivateKey = $bobkey\$" <<<"$out" || fail "rename must keep the client key"

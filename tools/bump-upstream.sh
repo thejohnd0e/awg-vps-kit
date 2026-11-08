@@ -34,7 +34,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 url_of() { echo "https://github.com/amnezia-vpn/$1"; }
-locked() { awk -F= -v k="$1" '$1 == k && $2 ~ /^[0-9a-f]{40}$/ { print $2; exit }' "$LOCK"; }
+locked() { awk -F= -v k="$1" '$1 == k && length($2) == 40 && $2 ~ /^[0-9a-f]+$/ { print $2; exit }' "$LOCK"; }
 head_of() { git ls-remote "$(url_of "$1")" HEAD | cut -f1; }
 describe() {  # describe <name> <sha>: "abc1234 2026-08-28 author: subject"; fails if the commit cannot be fetched
   local d=$TMP/$1.$2
