@@ -23,11 +23,15 @@ awg-client - manage AmneziaWG clients on this server (run as root)
 Usage:
   awg-client add <name>      create a client, print its config and QR code
   awg-client show <name>     print an existing client's config and QR code again
-  awg-client list            list all clients with their tunnel addresses
+  awg-client list [-v]       list all clients with their tunnel addresses
+                             (-v: last handshake, traffic and endpoint of each)
   awg-client remove <name>   remove a client (takes effect immediately)
+  awg-client rename <old> <new>       give a client another name (devices are not affected)
+  awg-client export [file.tar.gz]     all client configs in one archive (contains private keys)
   awg-client version         show installed kit and amneziawg versions
   awg-client protocol [1.0|1.5|2.0]   show or change the protocol version of this server
   awg-client mtu [1280-1500]          show or set the MTU written into client configs (default 1420)
+  awg-client dns [ADDR[,ADDR]|default]  show or set the DNS servers written into client configs (default 1.1.1.1)
   awg-client help            this help
 
 Notes:
@@ -46,6 +50,12 @@ Notes:
     working; new configs get the I1-I5 fields for 1.5.
   - `mtu N` only changes the MTU line of client configs (server awg0 is not touched, no restart).
     Devices that are already set up keep their old MTU until they import `awg-client show <name>` again.
+  - `dns` works the same way: up to 3 IPv4 addresses (the tunnel is IPv4-only), new and re-shown
+    configs get them, devices keep the old ones until they import the config again.
+  - `rename` changes the name in awg0.conf and the file names only; keys, address and the running
+    peer stay as they are, so the device keeps working and needs no new config.
+  - `export` writes every client config, in the current format, to one .tar.gz (default
+    ./awg-clients-<host>-<time>.tar.gz, mode 600, never overwrites). The archive holds private keys.
   - If a peer operation was interrupted, /etc/amnezia/amneziawg/transactions/peer.* stays
     behind and further changes are refused: check awg0.conf, then remove that directory.
   - Details: /etc/amnezia/amneziawg/README.md
@@ -86,6 +96,26 @@ valid() { [[ "$1" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "name: letters, digits, 
 client_mtu() {  # MTU for client configs: $DIR/client-mtu, default 1420 (1500 minus 80 bytes of tunnel overhead)
   local m; m=$(cat "$DIR/client-mtu" 2>/dev/null || true); echo "${m:-1420}"
 }
+client_dns() {  # DNS servers for client configs: $DIR/client-dns, default 1.1.1.1
+  local d; d=$(cat "$DIR/client-dns" 2>/dev/null || true); echo "${d:-1.1.1.1}"
+}
+normalize_dns() {  # normalize_dns <a,b,c>: "a, b, c" for 1-3 IPv4 addresses, else nothing and return 1
+  local -a addrs
+  local list=$1 a o n=0 out=
+  [[ "$list" =~ ^[0-9.,]+$ ]] || return 1
+  case "$list" in ,*|*,|*,,*) return 1 ;; esac   # read -a would silently drop an empty last field
+  IFS=, read -r -a addrs <<<"$list"
+  for a in "${addrs[@]}"; do
+    [[ "$a" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    for o in "${BASH_REMATCH[@]:1}"; do
+      [ "$o" = 0 ] || [[ "$o" != 0* ]] || return 1   # canonical octets: no leading zeros
+      [ "$((10#$o))" -le 255 ] || return 1
+    done
+    out+="${out:+, }$a"; n=$((n+1))
+  done
+  { [ "$n" -ge 1 ] && [ "$n" -le 3 ]; } || return 1
+  printf '%s\n' "$out"
+}
 iface_val() { awk -v k="$1" '/^\[Peer\]/{exit} $1==k && $2=="="{print $3; exit}' "$CONF"; }
 qr() { if command -v qrencode >/dev/null; then echo; qrencode -t ansiutf8 < "$1"; fi; }
 # config between separator lines (only on screen, not in the file), then the QR code
@@ -104,7 +134,7 @@ gen_conf_raw() {  # name ip key psk
 [Interface]
 PrivateKey = $key
 Address = $ip/32
-DNS = 1.1.1.1
+DNS = $(client_dns)
 MTU = $(client_mtu)
 Jc = $(iface_val Jc)
 Jmin = $(iface_val Jmin)
@@ -138,7 +168,7 @@ peer_ip() {  # tunnel address of the peer commented "# <name>"
 # ------------------------------------------------------------- peer transactions
 # A mutation either completes or is rolled back. The runtime change happens before the
 # files are published, so a failure never leaves a saved peer that is not running.
-TXN=; PHASE=0; KIND=; TNAME=; TPUB=; TIP=; TPSK=; PTXN=
+TXN=; PHASE=0; KIND=; TNAME=; TNEW=; TPUB=; TIP=; TPSK=; PTXN=
 
 require_runtime() {
   awg show "$IF" >/dev/null 2>&1 || die "tunnel $IF is not running; start it before changing clients"
@@ -167,15 +197,20 @@ abort_peer_txn() {  # undo whatever phase we reached; return 1 if a step could n
   fi
   if [ "$PHASE" -ge 2 ]; then
     cp -p "$TXN/old.conf" "$CONF" 2>/dev/null || ok=1
-    if [ "$KIND" = add ]; then
-      rm -f "$CL/$TNAME".key "$CL/$TNAME".pub "$CL/$TNAME".psk "$CL/$TNAME".conf 2>/dev/null || ok=1
-    else
-      for f in "$TXN"/*; do
-        b=$(basename "$f")
-        case "$b" in old.conf|new.conf) continue ;; esac
-        cp -p "$f" "$CL/$b" 2>/dev/null || ok=1
-      done
-    fi
+    case "$KIND" in
+      add)
+        rm -f "$CL/$TNAME".key "$CL/$TNAME".pub "$CL/$TNAME".psk "$CL/$TNAME".conf 2>/dev/null || ok=1 ;;
+      rename)  # whatever was already moved goes back to the old name
+        for f in key pub psk conf; do
+          [ ! -e "$CL/$TNEW.$f" ] || mv -f "$CL/$TNEW.$f" "$CL/$TNAME.$f" 2>/dev/null || ok=1
+        done ;;
+      *)
+        for f in "$TXN"/*; do
+          b=$(basename "$f")
+          case "$b" in old.conf|new.conf) continue ;; esac
+          cp -p "$f" "$CL/$b" 2>/dev/null || ok=1
+        done ;;
+    esac
   fi
   if [ "$ok" = 0 ]; then rm -rf "$TXN"; TXN=; PHASE=0; return 0; fi
   return 1
@@ -213,6 +248,65 @@ drop_peer() {  # drop_peer <name> < conf: print conf without the [Peer] block co
     { buf = buf $0 "\n"; if (peer && $0 == n) hit = 1 }
     END { flush(); sub(/\n+$/, "\n", out); printf "%s", out }'
 }
+rename_peer() {  # rename_peer <old> <new> < conf: the "# <old>" comment of a [Peer] block becomes "# <new>"; fails unless exactly one
+  awk -v o="# $1" -v n="# $2" '
+    /^\[/ { peer = ($0 ~ /^\[Peer\]/) }
+    peer && $0 == o { print n; c++; next }
+    { print }
+    END { exit (c == 1 ? 0 : 1) }'
+}
+# list -v: one row per client with the live state of the tunnel (last handshake, traffic, endpoint)
+list_verbose() {
+  local dump
+  dump=$(awg show "$IF" dump 2>/dev/null || true)
+  [ -n "$dump" ] || echo "note: tunnel $IF is not running, no live data" >&2
+  # table 1: address, name and public key of every [Peer] block; table 2: `awg show dump`
+  # (first line is the interface, then one line per peer: key, psk, endpoint, allowed ips,
+  # latest handshake as epoch seconds, received bytes, sent bytes, keepalive)
+  awk -F'\t' -v now="$(date +%s)" '
+    function human(b,   u, i) {
+      split("B KiB MiB GiB TiB", u, " "); i = 1
+      while (b >= 1024 && i < 5) { b /= 1024; i++ }
+      return (i == 1) ? sprintf("%d B", b) : sprintf("%.1f %s", b, u[i])
+    }
+    function ago(t,   d) {
+      if (t == 0) return "never"
+      d = now - t; if (d < 0) d = 0
+      if (d < 5) return "just now"
+      if (d < 60) return d "s ago"
+      if (d < 3600) return int(d / 60) "m ago"
+      if (d < 86400) return int(d / 3600) "h ago"
+      return int(d / 86400) "d ago"
+    }
+    function pad(s, w) { return sprintf("%-" w "s", s) }
+    function lpad(s, w) { return sprintf("%" w "s", s) }
+    FILENAME == ARGV[1] { n++; ip[n] = $1; nm[n] = $2; idx[$3] = n; next }
+    FNR > 1 && ($1 in idx) { i = idx[$1]; hs[i] = $5; ep[i] = $3; rx[i] = $6; tx[i] = $7; live[i] = 1 }
+    END {
+      if (n == 0) { print "no clients"; exit }
+      wn = 4; wa = 7; wh = 9; wr = 2; wt = 2
+      for (i = 1; i <= n; i++) {
+        c1[i] = nm[i]; c2[i] = ip[i]
+        c3[i] = live[i] ? ago(hs[i]) : "-"
+        c4[i] = live[i] ? human(rx[i]) : "-"; c5[i] = live[i] ? human(tx[i]) : "-"
+        c6[i] = (live[i] && ep[i] != "(none)") ? ep[i] : "-"
+        if (length(c1[i]) > wn) wn = length(c1[i]); if (length(c2[i]) > wa) wa = length(c2[i])
+        if (length(c3[i]) > wh) wh = length(c3[i]); if (length(c4[i]) > wr) wr = length(c4[i])
+        if (length(c5[i]) > wt) wt = length(c5[i])
+      }
+      print pad("NAME", wn) "  " pad("ADDRESS", wa) "  " pad("HANDSHAKE", wh) "  " lpad("RX", wr) "  " lpad("TX", wt) "  ENDPOINT"
+      for (i = 1; i <= n; i++)
+        print pad(c1[i], wn) "  " pad(c2[i], wa) "  " pad(c3[i], wh) "  " lpad(c4[i], wr) "  " lpad(c5[i], wt) "  " c6[i]
+    }' \
+    <(awk '
+        function out() { if (p && ip != "") print ip "\t" n "\t" k }
+        /^\[/ { out(); p = ($0 ~ /^\[Peer\]/); n = ""; k = ""; ip = ""; next }
+        p && /^# / { n = substr($0, 3) }
+        p && $1 == "PublicKey" { k = $3 }
+        p && $1 == "AllowedIPs" { ip = $3; sub(/\/32.*/, "", ip) }
+        END { out() }' "$CONF" | sort -V) \
+    <(printf '%s\n' "$dump")
+}
 list_names() { awk '/^\[Peer\]/{p=1;n="";next} p&&/^# /{n=substr($0,3)} p&&/^AllowedIPs/{print n; p=0}' "$CONF"; }
 make_protocol_file() {  # make_protocol_file <version> <source> <dest>: keep every other key
   local ver=$1 src=$2 dst=$3 seen=0 line
@@ -232,8 +326,80 @@ make_protocol_file() {  # make_protocol_file <version> <source> <dest>: keep eve
 
 case "$cmd" in
   list)
+    case "$name" in
+      '') verbose=0 ;;
+      -v|--verbose) verbose=1 ;;
+      *) echo "unknown option for list: $name (usage: awg-client list [-v])" >&2; exit 1 ;;
+    esac
     require_conf
+    if [ "$verbose" = 1 ]; then list_verbose; exit 0; fi
     awk '/^\[Peer\]/{p=1;n="";next} p&&/^# /{n=substr($0,3)} p&&/^AllowedIPs/{print $3"\t"n; p=0}' "$CONF" | sort -V
+    exit 0 ;;
+  dns)
+    [ -n "$name" ] || { client_dns; exit 0; }
+    if [ "$name" != default ]; then
+      dns=$(normalize_dns "$name") || {
+        echo "dns must be 1-3 IPv4 addresses separated by commas, e.g. 1.1.1.1,8.8.8.8 (or: default)" >&2; exit 1; }
+    fi
+    take_lock
+    require_conf
+    ensure_dirs
+    if [ "$name" = default ]; then
+      rm -f "$DIR/client-dns"
+      echo "client DNS = $(client_dns) (default; new and re-shown configs, devices must re-import: awg-client show <name>)"
+      exit 0
+    fi
+    printf '%s\n' "$dns" > "$DIR/client-dns.new" && mv -f "$DIR/client-dns.new" "$DIR/client-dns"
+    chmod 644 "$DIR/client-dns"
+    echo "client DNS = $dns (new and re-shown configs; devices must re-import: awg-client show <name>)"
+    exit 0 ;;
+  rename)
+    old=$name; new=${3:-}
+    valid "$old"; valid "$new"
+    [ "$old" != "$new" ] || { echo "old and new name are the same" >&2; exit 1; }
+    take_lock
+    require_conf
+    ensure_dirs
+    pending_txn
+    ip=$(peer_ip "$old")
+    if [ -z "$ip" ] || [ ! -f "$CL/$old.key" ]; then echo "no such client: $old (see: awg-client list)" >&2; exit 1; fi
+    if [ -n "$(peer_ip "$new")" ] || [ -e "$CL/$new.conf" ] || [ -e "$CL/$new.key" ] \
+       || awk -v n="# $new" '$0==n{f=1} END{exit !f}' "$CONF"; then
+      echo "name $new is already used (see: awg-client list)" >&2; exit 1
+    fi
+    begin_txn rename "$old" "" "$ip"
+    TNEW=$new
+    # prepare the whole result first, and check that exactly one comment changed
+    rename_peer "$old" "$new" < "$CONF" > "$TXN/new.conf" || fail_txn "cannot prepare the new $CONF (is there exactly one [Peer] block for $old?)"
+    [ "$(grep -c '' "$TXN/new.conf")" = "$(grep -c '' "$CONF")" ] || fail_txn "the renamed $CONF changed in length; refusing to write it"
+    mv -f "$TXN/new.conf" "$CONF" || fail_txn "cannot write $CONF"
+    PHASE=2
+    for ext in key pub psk conf; do
+      [ ! -e "$CL/$old.$ext" ] || mv -f "$CL/$old.$ext" "$CL/$new.$ext" || fail_txn "cannot rename $CL/$old.$ext"
+    done
+    end_txn
+    echo "renamed $old -> $new (address $ip, keys and the running peer are unchanged: the device keeps working)"
+    exit 0 ;;
+  export)
+    dest=${name:-./awg-clients-$(hostname -s 2>/dev/null || echo server)-$(date +%Y%m%d-%H%M%S).tar.gz}
+    [ ! -e "$dest" ] || { echo "$dest already exists; choose another file" >&2; exit 1; }
+    take_lock
+    require_conf
+    ensure_dirs
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    count=0
+    while IFS=$'\t' read -r ip n; do
+      if [ ! -f "$CL/$n.key" ] || [ ! -f "$CL/$n.psk" ]; then echo "warning: skipping $n: its key files are missing" >&2; continue; fi
+      gen_conf "$n" "$ip" "$(cat "$CL/$n.key")" "$(cat "$CL/$n.psk")" > "$tmp/$n.conf" || die "cannot generate the config of $n"
+      count=$((count+1))
+    done < <(awk '/^\[Peer\]/{p=1;n="";next} p&&/^# /{n=substr($0,3)} p&&/^AllowedIPs/{sub(/\/32.*/,"",$3); print $3"\t"n; p=0}' "$CONF" | sort -V)
+    [ "$count" -gt 0 ] || die "no clients to export"
+    if ! ( cd "$tmp" && printf '%s\n' ./*.conf ) | tar -czf "$dest" -C "$tmp" -T -; then
+      rm -f "$dest"; die "cannot write $dest"
+    fi
+    echo "exported $count client config(s) to $dest"
+    echo "the archive contains private keys: keep it safe and delete it when it is no longer needed"
     exit 0 ;;
   show)
     valid "$name"

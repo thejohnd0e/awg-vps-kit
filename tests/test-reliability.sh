@@ -219,6 +219,24 @@ EOS
   assert_missing "$CL/termsig.conf" "interrupted add must not leave client files"
   ls -d "$DIR"/transactions/peer.* >/dev/null 2>&1 && fail "clean SIGTERM rollback must remove the transaction"
 
+  # rename: a failure while moving the client files restores awg0.conf and the old file names.
+  "$ROOT/awg-client" add renme >/dev/null
+  pbefore=$(sha256sum "$CONF" | cut -d' ' -f1); saved=$PATH
+  stub_mv_fail "/clients/renamed.psk"
+  if "$ROOT/awg-client" rename renme renamed >/dev/null 2>&1; then
+    fail "rename must fail when moving a client file fails"
+  fi
+  PATH=$saved
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$pbefore" ] || fail "failed rename must restore awg0.conf"
+  local e
+  for e in key pub psk conf; do
+    [ -e "$CL/renme.$e" ] || fail "failed rename must put $CL/renme.$e back"
+    assert_missing "$CL/renamed.$e" "failed rename must not leave $CL/renamed.$e"
+  done
+  ls -d "$DIR"/transactions/peer.* >/dev/null 2>&1 && fail "clean rename rollback must remove the transaction"
+  "$ROOT/awg-client" rename renme renamed >/dev/null || fail "rename must work again after a rolled-back attempt"
+  "$ROOT/awg-client" list | grep -q 'renamed$' || fail "renamed client missing from the list"
+
   # An unfinished transaction blocks the next change until it is resolved.
   mkdir -p "$DIR/transactions/peer.test"
   if "$ROOT/awg-client" add pendingx >/dev/null 2>&1; then fail "unfinished transaction must block add"; fi

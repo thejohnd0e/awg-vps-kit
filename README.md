@@ -147,11 +147,15 @@ Run as root.
 awg-client help            # short help
 awg-client add <name>      # create a client, print config + QR code
 awg-client show <name>     # print config + QR code again
-awg-client list            # clients and their tunnel addresses
+awg-client list            # clients and their tunnel addresses (AllowedIPs)
+awg-client list -v         # plus last handshake, traffic and endpoint of each client
 awg-client remove <name>   # remove a client
+awg-client rename <old> <new>   # new name for a client; the device keeps working
+awg-client export [file.tar.gz] # every client config in one archive (holds private keys)
 awg-client version          # installed kit and amneziawg versions
 awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 (without an argument: show it)
 awg-client mtu 1420         # MTU written into client configs (without an argument: show it; default 1420)
+awg-client dns 9.9.9.9      # DNS servers written into client configs (up to 3 IPv4; `default` = 1.1.1.1)
 ```
 
 - Name: letters, digits, `_`, `-`, up to 32 characters.
@@ -161,6 +165,20 @@ awg-client mtu 1420         # MTU written into client configs (without an argume
 - `add` and `remove` stage the new `awg0.conf` first and roll back if any step fails. Only
   `protocol` keeps copies (`awg0.conf.bak-protocol-*`, `protocol.bak-*`; the 5 newest of each).
 - One config = one device. Two devices on the same config kick each other off.
+- `list -v` reads the running interface. `HANDSHAKE` is the age of the client's last handshake: `never`
+  means the device has not connected since the tunnel started; a connected device with the default
+  keepalive shows a couple of minutes at most, anything older means it is offline or blocked (see the
+  note on `latest handshake` below). `RX`/`TX` are bytes received from / sent to the client since the
+  tunnel started. Without a running tunnel it still lists the clients and says there is no live data.
+- `rename` changes the name in `awg0.conf` and the file names in `clients/`; the client config contains no
+  name, so devices need no new config. It refuses a name that is already used and rolls back if a file
+  cannot be moved.
+- `export` regenerates every config in the current format (current MTU, DNS and protocol) into one
+  `.tar.gz` (default `./awg-clients-<host>-<time>.tar.gz`, mode 600, never overwrites). **It contains
+  the clients' private keys**: store it like a password and delete it when it has served its purpose.
+- `dns` changes the `DNS =` line of client configs only (no server restart). Only IPv4 addresses are
+  accepted because the tunnel is IPv4-only. As with MTU, a device keeps its old DNS until it imports
+  `awg-client show <name>` again.
 - Do not remove a client that is in use: that device loses its VPN immediately.
 - Client MTU is 1420 by default (1500 minus the tunnel overhead). Some sites (for example 2ip.io)
   flag a tunnel MTU of 1280 as "VPN fingerprint". The server interface stays at 1280; `awg-client mtu N`

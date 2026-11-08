@@ -80,7 +80,11 @@ stub_awg() {
   mv /usr/local/bin/awg /usr/local/bin/awg.real
   cat > /usr/local/bin/awg <<'EOS'
 #!/bin/sh
-case "$1" in genkey|pubkey|genpsk) exec /usr/local/bin/awg.real "$@" ;; *) exit 0 ;; esac
+case "$1" in
+  genkey|pubkey|genpsk) exec /usr/local/bin/awg.real "$@" ;;
+  show) if [ -n "${AWG_STUB_DUMP:-}" ] && [ "$3" = dump ]; then cat "$AWG_STUB_DUMP"; fi; exit 0 ;;
+  *) exit 0 ;;
+esac
 EOS
   chmod 755 /usr/local/bin/awg
 }
@@ -138,6 +142,76 @@ awg-client list | grep -q bob || fail "bob lost after removing the last peer"
 awg-client add carol >/dev/null
 awg-client list | grep -q "^10.79.0.2.*carol" || fail "carol should get 10.79.0.2 again"
 ok "remove deletes exactly one peer in a config without blank lines"
+
+# --- client DNS: default, validation, per-config effect, reset
+[ "$(awg-client dns)" = 1.1.1.1 ] || fail "dns without argument must print 1.1.1.1"
+out=$(awg-client show bob); grep -q '^DNS = 1.1.1.1$' <<<"$out" || fail "default client DNS must be 1.1.1.1"
+for bad in abc 1.1.1 256.1.1.1 ::1 01.1.1.1 "1.1.1.1," 1.1.1.1,,2.2.2.2 1.1.1.1,2.2.2.2,3.3.3.3,4.4.4.4; do
+  if awg-client dns "$bad" >/dev/null 2>&1; then fail "dns '$bad' must be rejected"; fi
+done
+[ "$(awg-client dns)" = 1.1.1.1 ] || fail "a rejected dns value must not change the setting"
+awg-client dns 9.9.9.9,149.112.112.112 >/dev/null
+[ "$(awg-client dns)" = "9.9.9.9, 149.112.112.112" ] || fail "dns must be stored normalised"
+out=$(awg-client show bob); grep -q '^DNS = 9.9.9.9, 149.112.112.112$' <<<"$out" || fail "show must use the configured DNS"
+awg-client dns default >/dev/null
+[ "$(awg-client dns)" = 1.1.1.1 ] && [ ! -e "$DIR/client-dns" ] || fail "dns default must restore 1.1.1.1"
+ok "client DNS: default, validation, applied to show, reset"
+
+# --- rename: only the name changes
+awg-client add bobby >/dev/null
+bobkey=$(cat "$DIR/clients/bob.key"); bobip=$(awg-client list | awk '$2=="bob"{print $1}')
+bobip=${bobip%/32}   # list prints the AllowedIPs value
+awg-client rename bob bobx >/dev/null
+names=$(awg-client list | cut -f2 | sort | tr '\n' ' ')
+[ "$names" = "bobby bobx carol " ] || fail "rename touched the wrong peers: $names"
+for e in key pub psk conf; do
+  [ ! -e "$DIR/clients/bob.$e" ] && [ -e "$DIR/clients/bobx.$e" ] || fail "rename must move clients/bob.$e"
+done
+out=$(awg-client show bobx)
+grep -q "^PrivateKey = $bobkey\$" <<<"$out" || fail "rename must keep the client key"
+grep -q "^Address = $bobip/32\$" <<<"$out" || fail "rename must keep the client address"
+if awg-client show bob >/dev/null 2>&1; then fail "the old name must be gone after rename"; fi
+for args in "bobx carol" "bobx bobx" "nosuch other" "bobx" "bobx bad!name" "bobx $(printf 'n%.0s' $(seq 1 33))"; do
+  # shellcheck disable=SC2086  # word splitting of the argument pairs is the point
+  if awg-client rename $args >/dev/null 2>&1; then fail "rename $args must fail"; fi
+done
+[ "$(awg-client list | cut -f2 | sort | tr '\n' ' ')" = "bobby bobx carol " ] || fail "a rejected rename changed the list"
+sed -i '/^$/d' "$DIR/awg0.conf"     # a compact config must be handled too
+awg-client rename carol carol2 >/dev/null
+[ "$(awg-client list | cut -f2 | sort | tr '\n' ' ')" = "bobby bobx carol2 " ] || fail "rename in a compact config failed"
+[ "$(grep -c '^\[Peer\]' "$DIR/awg0.conf")" = 3 ] || fail "rename must keep every peer"
+ok "rename: only the name changes, keys and address stay, bad input rejected"
+
+# --- list -v: handshake, traffic and endpoint from the running interface
+[ "$(awg-client list | head -1 | cut -f2)" = carol2 ] || fail "plain list changed its format"
+bpub=$(cat "$DIR/clients/bobx.pub"); now=$(date +%s)
+dump=$(mktemp)
+printf 'priv\tpub\t443\toff\t5\t40\t900\t1\t2\t3\t4\n%s\t(none)\t198.51.100.7:51820\t10.79.0.3/32\t%s\t1048576\t2097152\t25\n' "$bpub" "$((now - 125))" > "$dump"
+out=$(AWG_STUB_DUMP=$dump awg-client list -v)
+head -1 <<<"$out" | grep -q '^NAME .*ADDRESS .*HANDSHAKE .*RX .*TX .*ENDPOINT$' || fail "list -v: bad header: $out"
+row=$(grep '^bobx ' <<<"$out")
+for want in '2m ago' '1.0 MiB' '2.0 MiB' '198.51.100.7:51820'; do grep -q -- "$want" <<<"$row" || fail "list -v: bobx row lacks '$want': $row"; done
+row=$(grep '^bobby ' <<<"$out"); grep -q 'HANDSHAKE\|ago\|never' <<<"$row" && fail "list -v: a peer missing from the dump must show dashes: $row"
+out=$(awg-client list -v 2>&1); grep -q 'not running' <<<"$out" || fail "list -v without a live interface must say so: $out"
+grep -q '^bobx ' <<<"$out" || fail "list -v without a live interface must still list clients"
+if awg-client list --bogus >/dev/null 2>&1; then fail "list must reject unknown options"; fi
+rm -f "$dump"
+ok "list -v: handshake age, traffic, endpoint, no live data"
+
+# --- export: every client in one archive, current format, private
+awg-client dns 9.9.9.9 >/dev/null
+exp=$(mktemp -u /tmp/awg-export.XXXXXX).tar.gz
+awg-client export "$exp" >/dev/null || fail "export failed"
+[ "$(stat -c %a "$exp")" = 600 ] || fail "the export archive must be mode 600"
+[ "$(tar -tzf "$exp" | sed 's#^\./##' | sort | tr '\n' ' ')" = "bobby.conf bobx.conf carol2.conf " ] || fail "export must hold one config per client: $(tar -tzf "$exp" | tr '\n' ' ')"
+out=$(tar -xzOf "$exp" ./bobx.conf)
+grep -q '^DNS = 9.9.9.9$' <<<"$out" || fail "export must use the current DNS setting"
+grep -q "^PrivateKey = $bobkey\$" <<<"$out" || fail "exported config lacks the client key"
+if awg-client export "$exp" >/dev/null 2>&1; then fail "export must not overwrite an existing file"; fi
+exdir=$(mktemp -d); ( cd "$exdir" && awg-client export >/dev/null ) || fail "export without a name failed"
+[ "$(find "$exdir" -name 'awg-clients-*.tar.gz' | wc -l)" = 1 ] || fail "export without a name must write awg-clients-*.tar.gz to the current folder"
+rm -rf "$exp" "$exdir"; awg-client dns default >/dev/null
+ok "export: one config per client, current settings, mode 600, no overwrite"
 
 check=$(./update.sh --check) || [ $? = 10 ]   # 0 = latest installed, 10 = update available
 echo "$check" | grep -q "^amneziawg-go: " || fail "update --check printed no status"
