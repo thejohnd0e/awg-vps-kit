@@ -187,7 +187,11 @@ awg-client dns 9.9.9.9      # DNS servers written into client configs (up to 3 I
 - The server clamps the TCP MSS of connections through the tunnel to 1240 (the 1280 MTU of `awg0`
   minus 40 bytes of headers), in both directions; smaller values are left alone. Without it a client
   with MTU 1420 would advertise an MSS that does not fit the server interface. `update.sh` adds the
-  rules to servers installed earlier.
+  rules to servers installed earlier whose NAT lives in `nat-up.nft` (including the oldest shape that
+  has only the `post` chain: it gets an `awg_forward` chain that holds nothing but these rules). Servers
+  that still keep NAT as iptables commands in the `PostUp` line of `awg0.conf` (adopted before
+  `nat-up.nft` existed) are not changed: a missing clamp there only means that large TCP transfers rely
+  on path MTU discovery, as before.
 
 ### Using a client config
 

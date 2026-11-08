@@ -129,25 +129,50 @@ refresh_scripts() {
 # Server config migrations for installations created by older kits. Idempotent and
 # limited to the files this kit owns; the config is backed up before a rewrite.
 apply_migrations() {
-  local nat=$DIR/nat-up.nft conf=$DIR/$IF.conf ts
+  local nat=$DIR/nat-up.nft conf=$DIR/$IF.conf ts mss_mode
   if [ -f "$nat" ] && ! grep -qx 'delete table ip awg_nat' "$nat"; then
     { printf 'table ip awg_nat\n'; printf 'delete table ip awg_nat\n'; cat "$nat"; } > "$nat.new" \
       && mv -f "$nat.new" "$nat"
   fi
-  # MSS clamping for the 1280 MTU of the server interface (see install.sh): put the rules in
-  # front of the first accept of the forward chain, and apply them to a running tunnel too.
-  if [ -f "$nat" ] && ! grep -q 'tcp option maxseg' "$nat" && grep -qx "    iifname \"$IF\" accept" "$nat"; then
+  # MSS clamping for the 1280 MTU of the server interface (see install.sh), also applied to a
+  # running tunnel. Two shapes of nat-up.nft are known: with the awg_forward chain (the rules go
+  # in front of its first accept) and the oldest one with only the `post` chain (a chain is added
+  # that holds nothing but the MSS rules, policy accept, so nothing is blocked or allowed by it).
+  # Any other file is left alone.
+  mss_mode=
+  if [ -f "$nat" ] && ! grep -q 'tcp option maxseg' "$nat"; then
+    if grep -qx "    iifname \"$IF\" accept" "$nat"; then
+      mss_mode=insert
+    elif ! grep -q 'chain awg_forward' "$nat" && [ "$(grep -v '^[[:space:]]*$' "$nat" | tail -1)" = "}" ]; then
+      mss_mode=chain
+    fi
+  fi
+  if [ -n "$mss_mode" ]; then
     ts=$(date +%Y%m%d-%H%M%S)
     cp -p "$nat" "$nat.bak-update-$ts"
-    awk -v i="$IF" '
-      $0 == "    iifname \"" i "\" accept" && !done {
+    awk -v i="$IF" -v mode="$mss_mode" '
+      function rules() {
         print "    # MSS clamping for the 1280 MTU of " i " (1280 - 40 bytes of IPv4+TCP headers): clients use"
         print "    # a larger MTU (1420), so without this they advertise an MSS that does not fit the tunnel."
         print "    iifname \"" i "\" tcp flags syn tcp option maxseg size > 1240 tcp option maxseg size set 1240"
         print "    oifname \"" i "\" tcp flags syn tcp option maxseg size > 1240 tcp option maxseg size set 1240"
-        done = 1
       }
-      { print }' "$nat" > "$nat.new" && mv -f "$nat.new" "$nat" && chmod 644 "$nat"
+      { line[NR] = $0 }
+      END {
+        last = NR
+        while (last > 0 && line[last] ~ /^[ \t]*$/) last--
+        for (k = 1; k <= NR; k++) {
+          if (mode == "insert" && !done && line[k] == "    iifname \"" i "\" accept") { rules(); done = 1 }
+          if (mode == "chain" && !done && k == last) {
+            print "  chain awg_forward {"
+            print "    type filter hook forward priority filter - 1; policy accept;"
+            rules()
+            print "  }"
+            done = 1
+          }
+          print line[k]
+        }
+      }' "$nat" > "$nat.new" && mv -f "$nat.new" "$nat" && chmod 644 "$nat"
     if command -v nft >/dev/null 2>&1 && nft list table ip awg_nat >/dev/null 2>&1; then
       if ! nft -f "$nat"; then
         echo "warning: the new NAT rules did not load; restoring the previous nat-up.nft" >&2

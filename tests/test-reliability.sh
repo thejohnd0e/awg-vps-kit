@@ -346,6 +346,35 @@ EOS
   ls "$DIR"/nat-up.nft.bak-update-* >/dev/null 2>&1 || fail "update must keep a backup of the old nat-up.nft"
   rm -f "$DIR"/nat-up.nft.bak-update-*
 
+  # The oldest nat-up.nft (only the `post` chain, as on servers adopted early) gets an awg_forward
+  # chain that holds nothing but the MSS rules: no accept rule, so it allows and blocks nothing.
+  cat > "$DIR/nat-up.nft" <<'EOS'
+table ip awg_nat
+delete table ip awg_nat
+table ip awg_nat {
+  chain post {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr 10.78.0.0/24 oifname "eth0" masquerade
+  }
+}
+EOS
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  [ "$(grep -c 'tcp option maxseg size > 1240 tcp option maxseg size set 1240' "$DIR/nat-up.nft")" = 2 ] \
+    || fail "update must add the MSS rules to the oldest nat-up.nft"
+  [ "$(grep -c 'chain awg_forward' "$DIR/nat-up.nft")" = 1 ] || fail "update must add exactly one awg_forward chain"
+  if grep -q '^    [io]ifname "awg0" accept' "$DIR/nat-up.nft"; then fail "the added chain must not accept anything"; fi
+  grep -q 'masquerade' "$DIR/nat-up.nft" || fail "the existing masquerade rule must stay"
+  [ "$(grep -v '^[[:space:]]*$' "$DIR/nat-up.nft" | tail -1)" = "}" ] || fail "the migrated file must still end with the table's closing brace"
+  cp -p "$DIR/nat-up.nft" /tmp/awg-nat-migrated
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  cmp -s /tmp/awg-nat-migrated "$DIR/nat-up.nft" || fail "a second update must not change the migrated nat-up.nft"
+  rm -f /tmp/awg-nat-migrated "$DIR"/nat-up.nft.bak-update-*
+  # a file of an unknown shape is left alone (nothing is guessed on a production server)
+  printf 'table ip awg_nat {\n  chain post {\n  }\n}\n# local note\n' > "$DIR/nat-up.nft"
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  if grep -q 'maxseg' "$DIR/nat-up.nft"; then fail "an unknown nat-up.nft shape must not be modified with MSS rules"; fi
+  rm -f "$DIR"/nat-up.nft.bak-update-*
+
   # The tunnel unit follows the kit, but only where install.sh created one.
   local unit=/etc/systemd/system/awg-quick@.service
   rm -f "$unit"
@@ -618,7 +647,26 @@ case_mss() {
   # reloading must stay idempotent: one rule per direction, not two
   ip netns exec awgr nft -f "$DIR/nat-up.nft"
   [ "$(ip netns exec awgr nft list table ip awg_nat | grep -c 'maxseg')" = 2 ] || fail "reload duplicated the clamp rules"
-  ok "mss: baseline 1380, clamped 1240 both ways, small MSS untouched, reload idempotent"
+
+  # the migrated oldest shape (only the `post` chain) clamps just as well, and still masquerades
+  stub_git_version
+  cat > "$DIR/nat-up.nft" <<'EOS'
+table ip awg_nat
+delete table ip awg_nat
+table ip awg_nat {
+  chain post {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr 10.79.0.0/24 oifname "eth0" masquerade
+  }
+}
+EOS
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  ip netns exec awgr nft -f "$DIR/nat-up.nft" || fail "the migrated oldest nat-up.nft does not load"
+  ip -n awgc route change default via 10.79.0.1   # forget the advmss 1000 of the previous step
+  local migrated; migrated=$(mss_probe 9104)
+  [ "${migrated%% *}" = 1240 ] || fail "migrated oldest shape: server side should see MSS 1240 (got: $migrated)"
+  [ "${migrated##* }" = 1240 ] || fail "migrated oldest shape: client side should see MSS 1240 (got: $migrated)"
+  ok "mss: baseline 1380, clamped 1240 both ways, small MSS untouched, reload idempotent, oldest shape migrated"
 }
 
 case_pins() {
