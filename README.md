@@ -5,6 +5,19 @@ AmneziaWG (userspace `amneziawg-go`) on UDP 443 and the `awg-client` command to 
 clients. UDP-based, so it works where the ISP throttles TCP from foreign VPS hosters
 (see "When to use it").
 
+## Part of the VPS kit family
+
+`quality-vps-kit` is one of several independent tools for the same workflow: evaluate a VPS first, then set up VPN/proxy services on it.
+
+| Project | Purpose |
+|---|---|
+| [quality-vps-kit](https://github.com/thejohnd0e/quality-vps-kit) | read-only evaluation of a fresh VPS |
+| [xray-vps-kit](https://github.com/thejohnd0e/xray-vps-kit) | VLESS/Reality server installer and client management |
+| **awg-vps-kit** (this repo) | AmneziaWG server installer and client management |
+| [hysteria-vps-kit](https://github.com/thejohnd0e/hysteria-vps-kit) | Hysteria2 server installer and client management |
+
+The kits are independent: none of them modifies or requires the others.
+
 ## Related Projects
 
 These projects complement each other: the kits set up the servers, and the proxy containers bring a
