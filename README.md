@@ -86,12 +86,12 @@ before anything is installed: the port must be 1-65535 and every subnet octet 0-
 | `--wan-if eth0` | from default route | interface used for NAT |
 | `--bin-dir DIR` | build | use prebuilt `amneziawg-go`, `awg`, `awg-quick` from `DIR` (copy them from another server, e.g. `/opt/amneziawg/bin`, to skip the build) |
 | `--build-only DIR` | | only build the binaries into `DIR` and exit |
-| `--protocol 1.0\|1.5\|2.0` | `1.0` (asked in a terminal) | AmneziaWG protocol version, see below |
+| `--protocol 1.0\|1.5\|2.0\|3.1` | `1.0` (asked in a terminal) | AmneziaWG protocol version, see below |
 | `--first-client NAME` | none | create a client at the end and print its config |
 | `--no-service` | | write files only (no systemd, sysctl, firewall), for testing |
 | `--allow-outdated` | | install even if this git checkout is behind upstream (by default it stops and asks for `git pull`) |
 
-**Protocol version.** Without `--protocol`, an interactive run asks for it first (1 = 1.0, 2 = 1.5, 3 = 2.0; Enter = 1.0); with
+**Protocol version.** Without `--protocol`, an interactive run asks for it first (1 = 1.0, 2 = 1.5, 3 = 2.0, 4 = 3.1; Enter = 1.0); with
 `curl | bash` the question is still asked through the terminal, and without a terminal 1.0 is used.
 The choice is recorded in `/etc/amnezia/amneziawg/protocol`, `awg-client` follows it and `update.sh`
 never changes it.
@@ -101,16 +101,20 @@ never changes it.
 | 1.0 | `Jc/Jmin/Jmax`, `S1/S2`, `H1`-`H4` (single numbers) | works with every client |
 | 1.5 | `I1` signature packet (QUIC-like), client side only | client needs 1.5 support |
 | 2.0 | `S3/S4`, `H1`-`H4` as ranges `x-y` | client needs 2.0 support; the values must match on both ends |
+| 3.1 | `HeaderProtectionKey`, equal `S1`-`S4`, `H1`-`H4` = 1/2/3/4, `RandomTrailers`, `ContentPaddingAddition`, timer ranges | client needs 3.1 support (Amnezia VPN >= 5.0.1.5); the values must match on both ends; client MTU defaults to 1280 |
 
-Later "3+" features (header protection, content padding, timings) are not supported. Old clients
-(e.g. the `amnezia-bridge` container with awg-tools 2021) do not know the new fields: re-issue
-their configs or stay on 1.0.
+Protocol 3.1 needs a reviewed engine: the installer warns, and `awg-client protocol 3.1` refuses, when
+the installed `amneziawg-go` is not the reviewed 3.1 build (run `update.sh`). Its client configs default
+to MTU 1280 (1420 on 1.0-2.0), and the minimum client versions are Amnezia VPN >= 5.0.1.5, AmneziaWG
+Android >= v3.1.20260814 and Windows >= 3.1.0. Servers whose configs feed
+[AmneziaWG-to-Proxy](https://github.com/thejohnd0e/AmneziaWG-to-Proxy) must stay on 2.0 or lower until
+the engine in that container image is updated: it is 2.0 or older and does not know the 3.1 fields.
 
 What the installer does:
 
 1. builds (or takes) `amneziawg-go`, `awg`, `awg-quick` and installs them to `/usr/local/bin`;
 2. installs `qrencode`, `nftables`, `iproute2`;
-3. generates server keys and random obfuscation parameters (`S1`, `S2`, `H1`-`H4`, plus `S3/S4` for 2.0; `Jc/Jmin/Jmax` fixed at 5/40/900);
+3. generates server keys and random obfuscation parameters (`S1`, `S2`, `H1`-`H4`; `S3/S4` for 2.0; for 3.1 equal `S1`-`S4` (15-32), fixed `H1`-`H4` = 1/2/3/4, a `HeaderProtectionKey`, `RandomTrailers = on` and `ContentPaddingAddition = 10-100`; `Jc/Jmin/Jmax` fixed at 5/40/900);
 4. writes `/etc/amnezia/amneziawg/awg0.conf` and the NAT rules (nftables table `awg_nat`, removed when the service stops);
 5. enables `net.ipv4.ip_forward`, and if `ufw` is active opens the UDP port and adds a forwarding
    rule (firewalld is not supported, see "Not supported" above);
@@ -153,8 +157,8 @@ awg-client remove <name>   # remove a client
 awg-client rename <old> <new>   # new name for a client; the device keeps working
 awg-client export [file.tar.gz] # every client config in one archive (holds private keys)
 awg-client version          # installed kit and amneziawg versions
-awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 (without an argument: show it)
-awg-client mtu 1420         # MTU written into client configs (without an argument: show it; default 1420)
+awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 / 3.1 (without an argument: show it)
+awg-client mtu 1420         # MTU written into client configs (without an argument: show it; default 1420, 1280 on 3.1)
 awg-client dns 9.9.9.9      # DNS servers written into client configs (up to 3 IPv4; `default` = 1.1.1.1)
 ```
 
@@ -180,10 +184,11 @@ awg-client dns 9.9.9.9      # DNS servers written into client configs (up to 3 I
   accepted because the tunnel is IPv4-only. As with MTU, a device keeps its old DNS until it imports
   `awg-client show <name>` again.
 - Do not remove a client that is in use: that device loses its VPN immediately.
-- Client MTU is 1420 by default (1500 minus the tunnel overhead). Some sites (for example 2ip.io)
+- Client MTU is 1420 by default (1500 minus the tunnel overhead); on protocol 3.1 the default is 1280,
+  because the header protection and padding make the packet larger. Some sites (for example 2ip.io)
   flag a tunnel MTU of 1280 as "VPN fingerprint". The server interface stays at 1280; `awg-client mtu N`
-  (1280-1500) changes only the client configs. A device keeps its old MTU until it imports
-  `awg-client show <name>` again. If the server's own uplink MTU is below 1500, use WAN MTU minus 80.
+  (1280-1500) changes only the client configs and overrides the default. A device keeps its old MTU until
+  it imports `awg-client show <name>` again. If the server's own uplink MTU is below 1500, use WAN MTU minus 80.
 - The server clamps the TCP MSS of connections through the tunnel to 1240 (the 1280 MTU of `awg0`
   minus 40 bytes of headers), in both directions; smaller values are left alone. Without it a client
   with MTU 1420 would advertise an MSS that does not fit the server interface. `update.sh` adds the
@@ -204,13 +209,17 @@ awg-client dns 9.9.9.9      # DNS servers written into client configs (up to 3 I
   **`route_allowed_ips '0'`** (routing is done by ZeroBlock, not by the interface). Then add
   a ZeroBlock section of type `vpn` with that interface.
 
-**Changing the protocol of a running server:** `awg-client protocol 2.0` (or `1.5`, `1.0`) rewrites the
-`S3/S4/H1-H4` fields of `awg0.conf` (backup `awg0.conf.bak-protocol-<old>.<timestamp>`), keeps the keys,
+**Changing the protocol of a running server:** `awg-client protocol 3.1` (or `2.0`, `1.5`, `1.0`) rewrites the
+obfuscation fields of `awg0.conf` (`S3/S4/H1-H4`, or for 3.1 `S1`-`S4`, `H1`-`H4`, `HeaderProtectionKey`,
+`RandomTrailers`, `ContentPaddingAddition`; backup `awg0.conf.bak-protocol-<old>.<timestamp>`), keeps the keys,
 address plan and every client, and restarts the tunnel. All clients are offline until each gets its new
 config (`awg-client show <name>`); the old configs stop working. Switching only between `1.0` and `1.5`
 changes client-side data: the server fields are identical, so `awg0.conf` is not rewritten, the tunnel is
 not restarted and existing clients keep working; `awg-client show` then adds the `I1`-`I5` fields (or
-leaves them out for 1.0). Custom `I1`-`I5` values in `protocol` are preserved. The version does not change
+leaves them out for 1.0). Custom `I1`-`I5` values in `protocol` are preserved. `protocol 3.1` first checks
+that the installed `amneziawg-go` is the reviewed 3.1 build and refuses otherwise (run `update.sh`); it
+warns when the configured client MTU is above 1320 (padding may fragment), and client configs default to
+MTU 1280 afterwards unless `awg-client mtu` overrides. The version does not change
 speed (measured: 1.0, 1.5 and 2.0 give the same throughput within the noise).
 
 The obfuscation parameters must be identical on server and client; `awg-client` copies
