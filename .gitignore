@@ -24,3 +24,6 @@ CLAUDE.md
 STATUS.md
 DECISIONS.md
 TODO.md
+
+# Agent worktrees
+.worktrees/
