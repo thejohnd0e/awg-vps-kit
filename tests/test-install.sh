@@ -43,6 +43,12 @@ lib_check() (
   done
   awg_s34_values | grep -Eq '^S3 = ([89]|[1-5][0-9]|6[0-4])$' || fail "lib: S3 out of range"
   awg_s34_values | grep -Eq '^S4 = ([4-9]|[12][0-9]|3[0-2])$' || fail "lib: S4 out of range"
+  v=$(awg_s31_value); [[ "$v" =~ ^(1[5-9]|2[0-9]|3[0-2])$ ]] || fail "lib: 3.1 S value out of range: $v"
+  mapfile -t h31 < <(awg_h_values 3.1)
+  [ "${h31[*]}" = "1 2 3 4" ] || fail "lib: 3.1 H must be 1 2 3 4"
+  awg_31_client_defaults | grep -q '^ContentPaddingAddition=10-100$' || fail "lib: 3.1 default CPA missing"
+  [ "$(awg_31_client_defaults | grep -cE '^(I1|ContentPaddingAddition|DisableCookies|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts)=')" = 8 ] \
+    || fail "lib: 3.1 client defaults must have exactly 8 keys"
   d=$(mktemp -d); f=$d/kvfile
   printf 'a=1\nI1=<b 0x01>=x\n b =2\n' > "$f"
   [ "$(kv "$f" I1)" = '<b 0x01>=x' ] || fail "lib: kv must keep '=' inside a value"

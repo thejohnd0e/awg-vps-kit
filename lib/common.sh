@@ -57,10 +57,12 @@ awg_distinct_rnd32() {
   printf '%s\n' "${vals[@]}"
 }
 
-# awg_h_values <protocol>: the four H1..H4 values, one per line. Protocol 2.0 uses ranges "a-b";
-# eight distinct values are sorted and paired, so the four ranges can never overlap.
+# awg_h_values <protocol>: the four H1..H4 values, one per line. Protocol 3.1 has fixed values
+# 1-4; protocol 2.0 uses ranges "a-b"; eight distinct values are sorted and paired, so the four
+# ranges can never overlap.
 awg_h_values() {
   local -a r
+  if [ "$1" = 3.1 ]; then printf '%s\n' 1 2 3 4; return; fi
   if [ "$1" = 2.0 ]; then
     mapfile -t r < <(awg_distinct_rnd32 8 | sort -n)
     printf '%s-%s\n' "${r[@]}"
@@ -71,3 +73,18 @@ awg_h_values() {
 
 # awg_s34_values: the S3/S4 lines of protocol 2.0.
 awg_s34_values() { printf 'S3 = %s\nS4 = %s\n' "$(shuf -i 8-64 -n 1)" "$(shuf -i 4-32 -n 1)"; }
+
+# awg_s31_value: one random protocol-3.1 S value (15-32).
+awg_s31_value() { shuf -i 15-32 -n 1; }
+
+# awg_31_client_defaults: the key=value defaults of the protocol-3.1 client fields for $DIR/protocol.
+awg_31_client_defaults() {
+  echo "I1=$AWG_I1_DEFAULT"
+  echo "ContentPaddingAddition=10-100"
+  echo "DisableCookies=on"
+  echo "RekeyAfterTime=100-120"
+  echo "RekeyTimeout=3-7"
+  echo "RejectAfterTime=150-180"
+  echo "KeepaliveTimeout=5-15"
+  echo "MaxHandshakeAttempts=15-20"
+}
