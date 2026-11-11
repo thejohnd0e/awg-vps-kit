@@ -14,6 +14,9 @@ has() { grep -q -- "$2" "$1" || fail "$1 lacks: $2"; }
 for f in awg0.conf srv.key srv.pub endpoint nat-up.nft README.md; do [ -s "$DIR/$f" ] || fail "missing $DIR/$f"; done
 has "$DIR/awg0.conf" 'Address = 10.79.0.1/24'
 [ -s "$DIR/versions" ] || fail "versions file not recorded"
+[ -s "$DIR/upstream.lock" ] || fail "upstream.lock not recorded"
+has "$DIR/upstream.lock" '^amneziawg-go='
+diff -q upstream.lock "$DIR/upstream.lock" >/dev/null || fail "installed upstream.lock differs from the repo's upstream.lock"
 has "$DIR/awg0.conf" 'ListenPort = 443'
 has "$DIR/nat-up.nft" 'ip saddr 10.79.0.0/24 oifname "eth0" masquerade'
 [ "$(grep -E '^H[1-4] =' "$DIR/awg0.conf" | awk '{print $3}' | sort -u | wc -l)" = 4 ] || fail "H1-H4 not distinct"

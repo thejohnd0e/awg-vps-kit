@@ -397,6 +397,12 @@ EOS
   printf '# stale copy\n' > "$libf"
   "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
   assert_same "$ROOT/lib/common.sh" "$libf" "update must refresh a stale library"
+
+  # upstream.lock is managed installed state: refreshed to the kit's copy like the library.
+  assert_same "$ROOT/upstream.lock" "$DIR/upstream.lock" "install must have put the lock in place"
+  printf 'amneziawg-go=0000000000000000000000000000000000000000\namneziawg-tools=0000000000000000000000000000000000000000\n' > "$DIR/upstream.lock"
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  assert_same "$ROOT/upstream.lock" "$DIR/upstream.lock" "update must refresh a stale upstream.lock"
   printf '[Unit]\nDescription=old kit unit\n' > "$unit"
   cp -p "$unit" /tmp/awg-old-unit
   mtime=$(stat -c %y /usr/local/bin/awg)
@@ -417,6 +423,8 @@ EOS
   # A failed restart must restore the previous binaries and metadata.
   { cat "$ROOT/lib/common.sh"; echo "# previous library"; } > "$libf"
   cp -p "$libf" /tmp/awg-old-lib
+  printf 'amneziawg-go=1111111111111111111111111111111111111111\namneziawg-tools=1111111111111111111111111111111111111111\n' > "$DIR/upstream.lock"
+  cp -p "$DIR/upstream.lock" /tmp/awg-old-lock
   mtime=$(stat -c %y /usr/local/bin/awg)
   local vhash; vhash=$(sha256sum "$DIR/versions" | cut -d' ' -f1)
   if SYSTEMCTL_ACTIVE=1 SYSTEMCTL_RESTART_FAIL=1 "$ROOT/update.sh" --force --bin-dir "$BIN" >/dev/null 2>&1; then
@@ -427,7 +435,8 @@ EOS
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed update must not touch awg0.conf"
   assert_same /tmp/awg-old-unit "$unit" "failed update must restore the previous tunnel unit"
   assert_same /tmp/awg-old-lib "$libf" "failed update must restore the previous library"
-  rm -f "$unit" /tmp/awg-old-unit /tmp/awg-old-lib
+  assert_same /tmp/awg-old-lock "$DIR/upstream.lock" "failed update must restore the previous upstream.lock"
+  rm -f "$unit" /tmp/awg-old-unit /tmp/awg-old-lib /tmp/awg-old-lock
   ok "update: fresh install, health gate, stopped service, pending block, rollback, tunnel unit, library"
 }
 

@@ -122,6 +122,13 @@ normalize_dns() {  # normalize_dns <a,b,c>: "a, b, c" for 1-3 IPv4 addresses, el
   printf '%s\n' "$out"
 }
 iface_val() { awk -v k="$1" '/^\[Peer\]/{exit} $1==k && $2=="="{print $3; exit}' "$CONF"; }
+engine_is_31() {  # exit 0 only when the installed engine is the reviewed 3.1 build
+  local have want
+  have=$(kv "$DIR/versions" amneziawg-go)
+  want=$(kv "$DIR/upstream.lock" amneziawg-go)
+  [[ "$have" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [ "$have" = "$want" ]
+}
 qr() { if command -v qrencode >/dev/null; then echo; qrencode -t ansiutf8 < "$1"; fi; }
 # config between separator lines (only on screen, not in the file), then the QR code
 SEP=############################################################

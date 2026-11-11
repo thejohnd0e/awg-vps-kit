@@ -296,7 +296,7 @@ managed_files() {
   printf '%s\n' /usr/local/bin/amneziawg-go /usr/local/bin/awg /usr/local/bin/awg-quick \
     /usr/local/bin/awg-client /usr/local/bin/awg-watchdog /usr/local/bin/block-ping \
     /etc/systemd/system/awg-watchdog.service /etc/systemd/system/awg-watchdog.timer "$TUNNEL_UNIT" \
-    "$LIB_DIR/common.sh" "$DIR/versions" "$DIR/kit-version" "$DIR/README.md"
+    "$LIB_DIR/common.sh" "$DIR/versions" "$DIR/kit-version" "$DIR/README.md" "$DIR/upstream.lock"
 }
 snapshot_state() {  # snapshot_state <txn>: remember the current, self-consistent set
   local txn=$1 f
@@ -355,6 +355,7 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
   install -m 644 "$HERE/awg-watchdog.timer" "$txn/new/awg-watchdog.timer"
   install -m 644 "$HERE/awg-quick@.service" "$txn/new/awg-quick@.service"
   install -m 644 "$HERE/README.md" "$txn/new/README.md"
+  install -m 644 "$HERE/upstream.lock" "$txn/new/upstream.lock"
   printf 'version=%s\ncommit=%s\n' "$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)" \
     "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$txn/new/kit-version"
 
@@ -374,6 +375,7 @@ if [ "$bin_outdated" = 1 ] || [ "$FORCE" = 1 ]; then
     install -m 644 "$txn/new/awg-watchdog.service" /etc/systemd/system/awg-watchdog.service || return 1
     install -m 644 "$txn/new/awg-watchdog.timer" /etc/systemd/system/awg-watchdog.timer || return 1
     install -m 644 "$txn/new/README.md" "$DIR/README.md" || return 1
+    install -m 644 "$txn/new/upstream.lock" "$DIR/upstream.lock" || return 1
     if [ -e "$TUNNEL_UNIT" ]; then
       install -m 644 "$txn/new/awg-quick@.service" "$TUNNEL_UNIT" || return 1
     fi
