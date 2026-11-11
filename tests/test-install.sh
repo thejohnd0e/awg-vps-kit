@@ -232,7 +232,7 @@ done
 ok "uninstall.sh removed everything"
 
 # Protocol versions: server fields, client fields, recorded choice.
-for proto in 1.5 2.0; do
+for proto in 1.5 2.0 3.1; do
   ./install.sh --no-service --protocol "$proto" --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
   stub_awg
   has "$DIR/protocol" "^protocol=$proto\$"
@@ -250,6 +250,15 @@ for proto in 1.5 2.0; do
       grep -Eq '^H[1-4] = [0-9]+-[0-9]+$' "$cfg" || fail "2.0 H1-H4 must be ranges"
       [ "$(grep -cE '^H[1-4] = [0-9]+-[0-9]+$' "$cfg")" = 4 ] || fail "2.0 needs four H ranges"
       grep -E '^H[1-4] =' "$cfg" | awk '{split($3,r,"-"); print r[1]; print r[2]}' | sort -n -c || fail "H ranges overlap or are unordered" ;;
+    3.1)
+      s=$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")
+      [ "$(grep -cE "^S[1-4] = $s\$" "$DIR/awg0.conf")" = 4 ] || fail "3.1: S1-S4 must be one equal value"
+      [[ "$s" =~ ^(1[5-9]|2[0-9]|3[0-2])$ ]] || fail "3.1: S out of 15-32"
+      [ "$(awk '$1 ~ /^H[1-4]$/{print $3}' "$DIR/awg0.conf" | paste -sd,)" = "1,2,3,4" ] || fail "3.1: H must be 1/2/3/4"
+      grep -Eq '^HeaderProtectionKey = [A-Za-z0-9+/]{43}=$' "$DIR/awg0.conf" || fail "3.1: HPK missing"
+      has "$DIR/awg0.conf" '^RandomTrailers = on$'
+      has "$DIR/awg0.conf" '^ContentPaddingAddition = 10-100$'
+      has "$DIR/protocol" '^ContentPaddingAddition=10-100$' ;;
   esac
   ok "protocol $proto"
   ./uninstall.sh --yes >/dev/null
@@ -285,9 +294,10 @@ if awg-client protocol 3.0 >/dev/null 2>&1; then fail "protocol 3.0 must be reje
 ok "awg-client protocol switches 1.0 / 1.5 / 2.0 and keeps clients"
 ./uninstall.sh --yes >/dev/null
 
-if ./install.sh --no-service --protocol 3.0 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null 2>&1; then
+if out=$(./install.sh --no-service --protocol 3.0 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" 2>&1); then
   fail "unknown protocol must be rejected"
 fi
+grep -q '1.0, 1.5, 2.0 or 3.1' <<<"$out" || fail "unknown protocol: unexpected message: $out"
 ok "unknown protocol rejected"
 
 # A tunnel /24 on top of a network the server is connected to must be refused.
