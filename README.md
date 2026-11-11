@@ -101,7 +101,7 @@ never changes it.
 | 1.0 | `Jc/Jmin/Jmax`, `S1/S2`, `H1`-`H4` (single numbers) | works with every client |
 | 1.5 | `I1` signature packet (QUIC-like), client side only | client needs 1.5 support |
 | 2.0 | `S3/S4`, `H1`-`H4` as ranges `x-y` | client needs 2.0 support; the values must match on both ends |
-| 3.1 | `HeaderProtectionKey`, equal `S1`-`S4`, `H1`-`H4` = 1/2/3/4, `RandomTrailers`, `ContentPaddingAddition`, timer ranges | client needs 3.1 support (Amnezia VPN >= 5.0.1.5); the values must match on both ends; client MTU defaults to 1280 |
+| 3.1 | `HeaderProtectionKey`, equal `S1`-`S4`, `H1`-`H4` = 1/2/3/4, `RandomTrailers`, `ContentPaddingAddition`, timer ranges | client needs 3.1 support (Amnezia VPN >= 5.0.1.5); `S1`-`S4`, `H1`-`H4`, `HeaderProtectionKey` and `RandomTrailers` must match on both ends (`ContentPaddingAddition` and the timers are sender-side); client MTU defaults to 1280 |
 
 Protocol 3.1 needs a reviewed engine: the installer warns, and `awg-client protocol 3.1` refuses, when
 the installed `amneziawg-go` is not the reviewed 3.1 build (run `update.sh`). Its client configs default

@@ -37,7 +37,10 @@ stub_awg() {
   cat > /usr/local/bin/awg <<'EOS'
 #!/bin/sh
 case "$1" in
-  genkey|pubkey|genpsk) exec /usr/local/bin/awg.real "$@" ;;
+  genkey)
+    [ "${AWG_STUB_GENKEY_FAIL:-0}" = 1 ] && { echo "stub: genkey failed" >&2; exit 1; }
+    exec /usr/local/bin/awg.real "$@" ;;
+  pubkey|genpsk) exec /usr/local/bin/awg.real "$@" ;;
   show)
     [ "${AWG_STUB_SHOW_FAIL:-0}" = 1 ] && { echo "stub: interface is down" >&2; exit 1; }
     exit 0 ;;

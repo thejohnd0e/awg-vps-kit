@@ -111,6 +111,7 @@ refresh_scripts() {
   install -m 755 "$HERE/awg-watchdog" /usr/local/bin/awg-watchdog
   install -m 755 "$HERE/block-ping" /usr/local/bin/block-ping
   install -m 644 "$HERE/README.md" "$DIR/README.md"
+  install -m 644 "$HERE/upstream.lock" "$DIR/upstream.lock"
   printf 'version=%s\ncommit=%s\n' "$(tr -d '\r\n ' < "$HERE/VERSION" 2>/dev/null || echo unknown)" \
     "$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" > "$DIR/kit-version"
   chmod 644 "$DIR/kit-version"

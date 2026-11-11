@@ -378,7 +378,11 @@ EOF
 chmod 644 "$DIR/nat-up.nft"
 
 # 3.1 header-protection key: a secret, written only into awg0.conf (mode 600) below.
-HPK=$([ "$PROTOCOL" != 3.1 ] || awg genkey)
+HPK=
+if [ "$PROTOCOL" = 3.1 ]; then
+  HPK=$(awg genkey)
+  [ -n "$HPK" ] || die "awg genkey failed; cannot generate the HeaderProtectionKey"
+fi
 
 cat > "$DIR/$IF.conf" <<EOF
 [Interface]
