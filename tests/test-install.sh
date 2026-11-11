@@ -14,6 +14,9 @@ has() { grep -q -- "$2" "$1" || fail "$1 lacks: $2"; }
 for f in awg0.conf srv.key srv.pub endpoint nat-up.nft README.md; do [ -s "$DIR/$f" ] || fail "missing $DIR/$f"; done
 has "$DIR/awg0.conf" 'Address = 10.79.0.1/24'
 [ -s "$DIR/versions" ] || fail "versions file not recorded"
+[ -s "$DIR/upstream.lock" ] || fail "upstream.lock not recorded"
+has "$DIR/upstream.lock" '^amneziawg-go='
+diff -q upstream.lock "$DIR/upstream.lock" >/dev/null || fail "installed upstream.lock differs from the repo's upstream.lock"
 has "$DIR/awg0.conf" 'ListenPort = 443'
 has "$DIR/nat-up.nft" 'ip saddr 10.79.0.0/24 oifname "eth0" masquerade'
 [ "$(grep -E '^H[1-4] =' "$DIR/awg0.conf" | awk '{print $3}' | sort -u | wc -l)" = 4 ] || fail "H1-H4 not distinct"
@@ -43,6 +46,12 @@ lib_check() (
   done
   awg_s34_values | grep -Eq '^S3 = ([89]|[1-5][0-9]|6[0-4])$' || fail "lib: S3 out of range"
   awg_s34_values | grep -Eq '^S4 = ([4-9]|[12][0-9]|3[0-2])$' || fail "lib: S4 out of range"
+  v=$(awg_s31_value); [[ "$v" =~ ^(1[5-9]|2[0-9]|3[0-2])$ ]] || fail "lib: 3.1 S value out of range: $v"
+  mapfile -t h31 < <(awg_h_values 3.1)
+  [ "${h31[*]}" = "1 2 3 4" ] || fail "lib: 3.1 H must be 1 2 3 4"
+  awg_31_client_defaults | grep -q '^ContentPaddingAddition=10-100$' || fail "lib: 3.1 default CPA missing"
+  [ "$(awg_31_client_defaults | grep -cE '^(I1|ContentPaddingAddition|DisableCookies|RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts)=')" = 8 ] \
+    || fail "lib: 3.1 client defaults must have exactly 8 keys"
   d=$(mktemp -d); f=$d/kvfile
   printf 'a=1\nI1=<b 0x01>=x\n b =2\n' > "$f"
   [ "$(kv "$f" I1)" = '<b 0x01>=x' ] || fail "lib: kv must keep '=' inside a value"
@@ -226,7 +235,7 @@ done
 ok "uninstall.sh removed everything"
 
 # Protocol versions: server fields, client fields, recorded choice.
-for proto in 1.5 2.0; do
+for proto in 1.5 2.0 3.1; do
   ./install.sh --no-service --protocol "$proto" --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
   stub_awg
   has "$DIR/protocol" "^protocol=$proto\$"
@@ -244,27 +253,66 @@ for proto in 1.5 2.0; do
       grep -Eq '^H[1-4] = [0-9]+-[0-9]+$' "$cfg" || fail "2.0 H1-H4 must be ranges"
       [ "$(grep -cE '^H[1-4] = [0-9]+-[0-9]+$' "$cfg")" = 4 ] || fail "2.0 needs four H ranges"
       grep -E '^H[1-4] =' "$cfg" | awk '{split($3,r,"-"); print r[1]; print r[2]}' | sort -n -c || fail "H ranges overlap or are unordered" ;;
+    3.1)
+      s=$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")
+      [ "$(grep -cE "^S[1-4] = $s\$" "$DIR/awg0.conf")" = 4 ] || fail "3.1: S1-S4 must be one equal value"
+      [[ "$s" =~ ^(1[5-9]|2[0-9]|3[0-2])$ ]] || fail "3.1: S out of 15-32"
+      [ "$(awk '$1 ~ /^H[1-4]$/{print $3}' "$DIR/awg0.conf" | paste -sd,)" = "1,2,3,4" ] || fail "3.1: H must be 1/2/3/4"
+      grep -Eq '^HeaderProtectionKey = [A-Za-z0-9+/]{43}=$' "$DIR/awg0.conf" || fail "3.1: HPK missing"
+      has "$DIR/awg0.conf" '^RandomTrailers = on$'
+      has "$DIR/awg0.conf" '^ContentPaddingAddition = 10-100$'
+      has "$DIR/protocol" '^ContentPaddingAddition=10-100$'
+      has "$cfg" '^MTU = 1280$'
+      srvhpk=$(awk '$1=="HeaderProtectionKey"{print $3}' "$DIR/awg0.conf")
+      grep -q "^HeaderProtectionKey = $srvhpk\$" "$cfg" || fail "3.1: client HPK must equal the server one"
+      has "$cfg" '^RandomTrailers = on$'
+      has "$cfg" '^DisableCookies = on$'
+      has "$cfg" '^ContentPaddingAddition = 10-100$'
+      [ "$(grep -cE '^(RekeyAfterTime|RekeyTimeout|RejectAfterTime|KeepaliveTimeout|MaxHandshakeAttempts) = ' "$cfg")" = 5 ] || fail "3.1: client timers missing"
+      has "$cfg" '^I1 = <b 0x' ;;
   esac
   ok "protocol $proto"
   ./uninstall.sh --yes >/dev/null
 done
+# Protocol-aware client MTU: 1420 on 1.0, 1280 on 3.1; an explicit `awg-client mtu` overrides.
+./install.sh --no-service --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
+stub_awg
+awg-client add gina >/dev/null
+grep -q '^MTU = 1420$' "$DIR/clients/gina.conf" || fail "1.0 client MTU must default to 1420"
+[ "$(awg-client mtu)" = 1420 ] || fail "mtu on 1.0 must print 1420"
+./uninstall.sh --yes >/dev/null
+./install.sh --no-service --protocol 3.1 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
+stub_awg
+awg-client add hank >/dev/null
+grep -q '^MTU = 1280$' "$DIR/clients/hank.conf" || fail "3.1 client MTU must default to 1280"
+[ "$(awg-client mtu)" = 1280 ] || fail "mtu on 3.1 must print 1280"
+awg-client mtu 1400 >/dev/null
+[ "$(awg-client mtu)" = 1400 ] || fail "an explicit mtu must override the default"
+./uninstall.sh --yes >/dev/null
+ok "client MTU is protocol-aware (1420 on 1.0, 1280 on 3.1) and overridable"
 # Switching the protocol of an installed server: fields rewritten, keys and clients kept.
 ./install.sh --no-service --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
 stub_awg
 awg-client add erin >/dev/null
 [ "$(awg-client protocol)" = 1.0 ] || fail "protocol: fresh server must report 1.0"
 key=$(cat "$DIR/clients/erin.key"); s1=$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")
-for proto in 2.0 1.5 1.0; do
+for proto in 1.5 2.0 3.1 1.0; do
   awg-client protocol "$proto" >/dev/null
   [ "$(awg-client protocol)" = "$proto" ] || fail "protocol: $proto not recorded"
   [ "$(grep -c '^\[Peer\]' "$DIR/awg0.conf")" = 1 ] || fail "protocol $proto: peer lost"
-  [ "$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")" = "$s1" ] || fail "protocol $proto: S1 changed"
-  [ "$(awk '/^\[Peer\]/{exit} /^(S3|S4|H[1-4]) =/' "$DIR/awg0.conf" | wc -l)" = "$([ "$proto" = 2.0 ] && echo 6 || echo 4)" ] || fail "protocol $proto: wrong server fields"
+  if [ "$proto" = 3.1 ]; then
+    [ "$(grep -cE '^(S[1-4]|H[1-4]|HeaderProtectionKey|RandomTrailers|ContentPaddingAddition) = ' "$DIR/awg0.conf")" = 11 ] || fail "protocol 3.1: wrong server fields"
+    s1=$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")   # 3.1 makes S1-S4 equal; a later downgrade must keep them
+  else
+    [ "$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")" = "$s1" ] || fail "protocol $proto: S1 changed"
+    [ "$(awk '/^\[Peer\]/{exit} /^(S3|S4|H[1-4]) =/' "$DIR/awg0.conf" | wc -l)" = "$([ "$proto" = 2.0 ] && echo 6 || echo 4)" ] || fail "protocol $proto: wrong server fields"
+  fi
   out=$(awg-client show erin)
   grep -q "^PrivateKey = $key\$" <<<"$out" || fail "protocol $proto: client key changed"
   case "$proto" in
     2.0) grep -Eq '^H1 = [0-9]+-[0-9]+$' <<<"$out" || fail "2.0: client H1 not a range"; grep -q '^S3 = ' <<<"$out" || fail "2.0: client has no S3" ;;
     1.5) grep -q '^I1 = ' <<<"$out" || fail "1.5: client has no I1" ;;
+    3.1) grep -q '^HeaderProtectionKey = ' <<<"$out" || fail "3.1: client has no HPK" ;;
     1.0) grep -Eq '^(S3|S4|I1) ' <<<"$out" && fail "1.0 client has newer fields" ;;
   esac
 done
@@ -275,13 +323,15 @@ awg-client protocol 1.0 >/dev/null
 [ ! -e "$DIR/awg0.conf.bak-protocol-1.0.20200101-000000" ] || fail "the oldest protocol backup must be pruned"
 find "$DIR" -maxdepth 1 -name 'awg0.conf.bak-protocol-*' ! -name '*.2020*' | grep -q . || fail "the newest protocol backup was pruned"
 [ "$(find "$DIR" -maxdepth 1 -name 'protocol.bak-*' | wc -l)" -le 5 ] || fail "protocol file backups are not pruned to 5"
-if awg-client protocol 3.0 >/dev/null 2>&1; then fail "protocol 3.0 must be rejected"; fi
-ok "awg-client protocol switches 1.0 / 1.5 / 2.0 and keeps clients"
+if out=$(awg-client protocol 3.0 2>&1); then fail "protocol 3.0 must be rejected"; fi
+grep -q '3.1' <<<"$out" || fail "protocol 3.0 rejection must mention 3.1"
+ok "awg-client protocol switches 1.0 / 1.5 / 2.0 / 3.1 and keeps clients"
 ./uninstall.sh --yes >/dev/null
 
-if ./install.sh --no-service --protocol 3.0 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null 2>&1; then
+if out=$(./install.sh --no-service --protocol 3.0 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" 2>&1); then
   fail "unknown protocol must be rejected"
 fi
+grep -q '1.0, 1.5, 2.0 or 3.1' <<<"$out" || fail "unknown protocol: unexpected message: $out"
 ok "unknown protocol rejected"
 
 # A tunnel /24 on top of a network the server is connected to must be refused.

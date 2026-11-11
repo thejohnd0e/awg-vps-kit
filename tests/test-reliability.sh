@@ -252,7 +252,7 @@ case_protocol() {
   local log=/tmp/awg-systemctl.log
   : > "$log"
   "$ROOT/awg-client" add erin >/dev/null
-  local before out; before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  local before out s has_kv_31 hpk o cbefore rc; before=$(sha256sum "$CONF" | cut -d' ' -f1)
   # key=value file format; custom I-signatures must survive every transition
   printf 'I1=<b 0xc00000000108><b 0x42>\nI2=keep=this\n' >> "$DIR/protocol"
 
@@ -287,7 +287,94 @@ case_protocol() {
   fi
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed protocol change must restore awg0.conf"
   [ "$("$ROOT/awg-client" protocol)" = 2.0 ] || fail "failed protocol change must keep protocol 2.0"
-  ok "protocol: metadata-only switches, custom fields, failed restart rollback"
+
+  # 2.0 -> 3.1 rewrites S1-S4 to one equal value and adds the 3.x keys and client defaults.
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 3.1 >/dev/null
+  s=$(awk '$1=="S1"{print $3}' "$CONF")
+  [ "$(grep -cE "^S[1-4] = $s\$" "$CONF")" = 4 ] || fail "3.1 switch: equal S missing"
+  grep -qE '^HeaderProtectionKey = [A-Za-z0-9+/]{43}=$' "$CONF" || fail "3.1 switch: HPK missing"
+  has_kv_31=$(grep -cE '^(ContentPaddingAddition|DisableCookies|RekeyAfterTime)=' "$DIR/protocol")
+  [ "$has_kv_31" -ge 3 ] || fail "3.1 switch: client defaults not appended to protocol file"
+  # custom values survive the transition (and are not overwritten by the defaults)
+  printf 'ContentPaddingAddition=50-90\nRekeyTimeout=9\n' >> "$DIR/protocol"
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 2.0 >/dev/null
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 3.1 >/dev/null
+  grep -q '^ContentPaddingAddition=50-90$' "$DIR/protocol" || fail "3.1 switch must keep custom CPA"
+  # a hand-edited line with a space before '=' must keep its value, not gain a duplicate default
+  printf 'protocol=3.1\nContentPaddingAddition =50-90\n' > "$DIR/protocol"
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 2.0 >/dev/null
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 3.1 >/dev/null
+  [ "$(grep -cE '^ContentPaddingAddition[[:space:]]*=' "$DIR/protocol")" = 1 ] || fail "a spaced CPA line must not gain a duplicate default"
+  grep -q '^ContentPaddingAddition =50-90$' "$DIR/protocol" || fail "a spaced CPA line must keep its value"
+  # 3.1 -> 1.0 removes every 3.x key; the equal S1/S2 survive the downgrade
+  s=$(awk '$1=="S1"{print $3}' "$CONF")   # re-captured: every switch to 3.1 regenerates S
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 1.0 >/dev/null
+  grep -qE '^(S3|S4|HeaderProtectionKey|RandomTrailers|ContentPaddingAddition) = ' "$CONF" && fail "downgrade must remove all 3.x keys"
+  [ "$(awk '$1=="S1"{print $3}' "$CONF")" = "$s" ] || fail "downgrade must keep the equal S1/S2"
+  # an unreviewed engine must be refused before awg0.conf is touched
+  before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  printf 'amneziawg-go=%040d\namneziawg-tools=%040d\n' 1 2 > "$DIR/versions"
+  if SYSTEMCTL_ACTIVE=1 "$ROOT/awg-client" protocol 3.1 >/dev/null 2>&1; then fail "3.1 must be refused on an unreviewed engine"; fi
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "refused 3.1 must not touch awg0.conf"
+  # an explicit client MTU > 1320 must warn but still apply
+  printf '1400\n' > "$DIR/client-mtu"
+  printf 'amneziawg-go=%s\namneziawg-tools=%s\n' "$(grep '^amneziawg-go=' "$ROOT/upstream.lock" | cut -d= -f2)" x > "$DIR/versions"
+  out=$(SYSTEMCTL_ACTIVE=1 "$ROOT/awg-client" protocol 3.1 2>&1)
+  grep -qi 'mtu' <<<"$out" || fail "explicit large client-mtu must warn on 3.1"
+  grep -q '^HeaderProtectionKey = ' "$CONF" || fail "3.1 after warning must still apply"
+  # HPK must not leak into list/version/protocol output
+  hpk=$(awk '$1=="HeaderProtectionKey"{print $3}' "$CONF")
+  for o in "$("$ROOT/awg-client" list)" "$("$ROOT/awg-client" list -v)" "$("$ROOT/awg-client" version)" "$out"; do
+    grep -q "$hpk" <<<"$o" && fail "HPK must not appear in list/version/protocol output"
+  done
+  # a failed restart on 3.1 -> 2.0 must roll the 3.1 files back
+  before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  if SYSTEMCTL_ACTIVE=1 SYSTEMCTL_RESTART_FAIL=1 SYSTEMCTL_LOG=$log \
+     "$ROOT/awg-client" protocol 2.0 >/dev/null 2>&1; then
+    fail "a failed restart must fail the 3.1 -> 2.0 change"
+  fi
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed 3.1 -> 2.0 must restore awg0.conf"
+  [ "$("$ROOT/awg-client" protocol)" = 3.1 ] || fail "failed 3.1 -> 2.0 must keep protocol 3.1"
+
+  # A failing `awg genkey` must not publish an empty HeaderProtectionKey.
+  fresh_install
+  stub_awg
+  stub_systemctl
+  : > "$log"
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 2.0 >/dev/null
+  cbefore=$(sha256sum "$CONF" | cut -d' ' -f1)
+  set +e
+  out=$(AWG_STUB_GENKEY_FAIL=1 SYSTEMCTL_ACTIVE=1 "$ROOT/awg-client" protocol 3.1 2>&1); rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "protocol 3.1 must fail when awg genkey fails"
+  case "$out" in *genkey*) ;; *) fail "a genkey failure must be reported (got: $out)" ;; esac
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$cbefore" ] || fail "a failed genkey must not modify awg0.conf"
+  [ "$("$ROOT/awg-client" protocol)" = 2.0 ] || fail "a failed genkey must keep protocol 2.0"
+  ls -d "$DIR"/transactions/protocol.* >/dev/null 2>&1 && fail "a failed genkey must not leave a protocol transaction"
+
+  # A missing/malformed anchor must fail the rewrite instead of silently dropping the fields.
+  sed -i 's/^Jmax = 900/Jmax=900/' "$CONF"      # the 3.1 anchor is `^Jmax =`
+  cbefore=$(sha256sum "$CONF" | cut -d' ' -f1)
+  set +e
+  out=$(SYSTEMCTL_ACTIVE=1 "$ROOT/awg-client" protocol 3.1 2>&1); rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a missing Jmax anchor must fail the protocol change"
+  case "$out" in *Jmax*) ;; *) fail "the anchor error must name Jmax (got: $out)" ;; esac
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$cbefore" ] || fail "a missing Jmax anchor must not modify awg0.conf"
+  [ "$("$ROOT/awg-client" protocol)" = 2.0 ] || fail "a missing Jmax anchor must keep protocol 2.0"
+
+  # The old ^S2 = anchor (1.0/2.0 switches) is guarded the same way.
+  sed -i 's/^Jmax=900/Jmax = 900/' "$CONF"
+  sed -i 's/^S2 = /S2=/' "$CONF"
+  cbefore=$(sha256sum "$CONF" | cut -d' ' -f1)
+  set +e
+  out=$(SYSTEMCTL_ACTIVE=1 "$ROOT/awg-client" protocol 1.0 2>&1); rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "a missing S2 anchor must fail the protocol change"
+  case "$out" in *S2*) ;; *) fail "the anchor error must name S2 (got: $out)" ;; esac
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$cbefore" ] || fail "a missing S2 anchor must not modify awg0.conf"
+  [ "$("$ROOT/awg-client" protocol)" = 2.0 ] || fail "a missing S2 anchor must keep protocol 2.0"
+  ok "protocol: metadata-only switches, custom fields, 3.1 switch/downgrade/guards, failed restart rollback, bad genkey and anchor guards"
 }
 
 case_update() {
@@ -397,6 +484,12 @@ EOS
   printf '# stale copy\n' > "$libf"
   "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
   assert_same "$ROOT/lib/common.sh" "$libf" "update must refresh a stale library"
+
+  # upstream.lock is managed installed state: refreshed to the kit's copy like the library.
+  assert_same "$ROOT/upstream.lock" "$DIR/upstream.lock" "install must have put the lock in place"
+  printf 'amneziawg-go=0000000000000000000000000000000000000000\namneziawg-tools=0000000000000000000000000000000000000000\n' > "$DIR/upstream.lock"
+  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
+  assert_same "$ROOT/upstream.lock" "$DIR/upstream.lock" "update must refresh a stale upstream.lock"
   printf '[Unit]\nDescription=old kit unit\n' > "$unit"
   cp -p "$unit" /tmp/awg-old-unit
   mtime=$(stat -c %y /usr/local/bin/awg)
@@ -417,6 +510,8 @@ EOS
   # A failed restart must restore the previous binaries and metadata.
   { cat "$ROOT/lib/common.sh"; echo "# previous library"; } > "$libf"
   cp -p "$libf" /tmp/awg-old-lib
+  printf 'amneziawg-go=1111111111111111111111111111111111111111\namneziawg-tools=1111111111111111111111111111111111111111\n' > "$DIR/upstream.lock"
+  cp -p "$DIR/upstream.lock" /tmp/awg-old-lock
   mtime=$(stat -c %y /usr/local/bin/awg)
   local vhash; vhash=$(sha256sum "$DIR/versions" | cut -d' ' -f1)
   if SYSTEMCTL_ACTIVE=1 SYSTEMCTL_RESTART_FAIL=1 "$ROOT/update.sh" --force --bin-dir "$BIN" >/dev/null 2>&1; then
@@ -427,8 +522,20 @@ EOS
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed update must not touch awg0.conf"
   assert_same /tmp/awg-old-unit "$unit" "failed update must restore the previous tunnel unit"
   assert_same /tmp/awg-old-lib "$libf" "failed update must restore the previous library"
-  rm -f "$unit" /tmp/awg-old-unit /tmp/awg-old-lib
-  ok "update: fresh install, health gate, stopped service, pending block, rollback, tunnel unit, library"
+  assert_same /tmp/awg-old-lock "$DIR/upstream.lock" "failed update must restore the previous upstream.lock"
+  rm -f "$unit" /tmp/awg-old-unit /tmp/awg-old-lib /tmp/awg-old-lock
+
+  # Migration 1.3.x -> 1.4.0 with the binaries already at the unchanged pins: the scripts-only
+  # path (refresh_scripts) must still install $DIR/upstream.lock, or engine_is_31 can never pass
+  # and `awg-client protocol 3.1` stays stuck behind "run update.sh first".
+  fresh_install
+  stub_awg
+  stub_git_version
+  stub_systemctl
+  rm -f "$DIR/upstream.lock"
+  "$ROOT/update.sh" --bin-dir "$BIN" --no-restart >/dev/null || fail "update without new binaries must succeed"
+  assert_same "$ROOT/upstream.lock" "$DIR/upstream.lock" "update without new binaries must install upstream.lock"
+  ok "update: fresh install, health gate, stopped service, pending block, rollback, tunnel unit, library, upstream.lock migration"
 }
 
 case_lock() {

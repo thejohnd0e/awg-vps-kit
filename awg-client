@@ -29,8 +29,8 @@ Usage:
   awg-client rename <old> <new>       give a client another name (devices are not affected)
   awg-client export [file.tar.gz]     all client configs in one archive (contains private keys)
   awg-client version         show installed kit and amneziawg versions
-  awg-client protocol [1.0|1.5|2.0]   show or change the protocol version of this server
-  awg-client mtu [1280-1500]          show or set the MTU written into client configs (default 1420)
+  awg-client protocol [1.0|1.5|2.0|3.1]   show or change the protocol version of this server
+  awg-client mtu [1280-1500]          show or set the MTU written into client configs (default 1420; 1280 on 3.1)
   awg-client dns [ADDR[,ADDR]|default]  show or set the DNS servers written into client configs (default 1.1.1.1)
   awg-client help            this help
 
@@ -48,6 +48,8 @@ Notes:
     must then get its new config (`awg-client show <name>`), old configs stop working.
   - Switching only between 1.0 and 1.5 keeps the server fields: no restart, existing clients keep
     working; new configs get the I1-I5 fields for 1.5.
+  - `protocol 3.1` (header protection, RandomTrailers) needs a client with Amnezia VPN >= 5.0.1.5;
+    such client configs default to MTU 1280, an explicit `awg-client mtu` overrides it.
   - `mtu N` only changes the MTU line of client configs (server awg0 is not touched, no restart).
     Devices that are already set up keep their old MTU until they import `awg-client show <name>` again.
   - `dns` works the same way: up to 3 IPv4 addresses (the tunnel is IPv4-only), new and re-shown
@@ -93,8 +95,11 @@ require_conf() { [ -f "$CONF" ] || { echo "no $CONF" >&2; exit 1; }; }
 ensure_dirs() { mkdir -p "$CL" "$TXN_ROOT"; chmod 700 "$TXN_ROOT"; }
 
 valid() { [[ "$1" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "name: letters, digits, _ and - only (max 32); see: awg-client help" >&2; exit 1; }; }
-client_mtu() {  # MTU for client configs: $DIR/client-mtu, default 1420 (1500 minus 80 bytes of tunnel overhead)
-  local m; m=$(cat "$DIR/client-mtu" 2>/dev/null || true); echo "${m:-1420}"
+client_mtu() {  # MTU for client configs: $DIR/client-mtu, else 1280 on protocol 3.1, else 1420
+  local m; m=$(cat "$DIR/client-mtu" 2>/dev/null || true)
+  if [ -n "$m" ]; then echo "$m"; return 0; fi
+  if [ "$(kv "$DIR/protocol" protocol)" = 3.1 ]; then echo 1280; return 0; fi
+  echo 1420
 }
 client_dns() {  # DNS servers for client configs: $DIR/client-dns, default 1.1.1.1
   local d; d=$(cat "$DIR/client-dns" 2>/dev/null || true); echo "${d:-1.1.1.1}"
@@ -117,15 +122,26 @@ normalize_dns() {  # normalize_dns <a,b,c>: "a, b, c" for 1-3 IPv4 addresses, el
   printf '%s\n' "$out"
 }
 iface_val() { awk -v k="$1" '/^\[Peer\]/{exit} $1==k && $2=="="{print $3; exit}' "$CONF"; }
+engine_is_31() {  # exit 0 only when the installed engine is the reviewed 3.1 build
+  local have want
+  have=$(kv "$DIR/versions" amneziawg-go)
+  want=$(kv "$DIR/upstream.lock" amneziawg-go)
+  [[ "$have" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [ "$have" = "$want" ]
+}
 qr() { if command -v qrencode >/dev/null; then echo; qrencode -t ansiutf8 < "$1"; fi; }
 # config between separator lines (only on screen, not in the file), then the QR code
 SEP=############################################################
 print_conf() { echo "$SEP"; cat "$CL/$1.conf"; echo "$SEP"; qr "$CL/$1.conf"; }
-extra_fields() {  # protocol-specific lines (S3/S4 from the server config, I1 from the protocol file)
+extra_fields() {  # protocol-specific lines: S3/S4, HeaderProtectionKey, RandomTrailers from the
+  # server config; the 1.5/3.1 client fields (I1-I5, padding, timers) from the protocol file.
   local k v
   for k in S3 S4; do v=$(iface_val "$k"); [ -z "$v" ] || echo "$k = $v"; done
-  [ "$(kv "$DIR/protocol" protocol)" = 1.5 ] || return 0
-  for k in I1 I2 I3 I4 I5; do v=$(kv "$DIR/protocol" "$k"); [ -z "$v" ] || echo "$k = $v"; done
+  for k in HeaderProtectionKey RandomTrailers; do v=$(iface_val "$k"); [ -z "$v" ] || echo "$k = $v"; done
+  case "$(kv "$DIR/protocol" protocol)" in
+    1.5) for k in I1 I2 I3 I4 I5; do v=$(kv "$DIR/protocol" "$k"); [ -z "$v" ] || echo "$k = $v"; done ;;
+    3.1) for k in DisableCookies ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts I1 I2 I3 I4 I5; do v=$(kv "$DIR/protocol" "$k"); [ -z "$v" ] || echo "$k = $v"; done ;;
+  esac
 }
 gen_conf() { gen_conf_raw "$@" | sed '/^H4 = /{n;/^$/d}'; }
 gen_conf_raw() {  # name ip key psk
@@ -155,11 +171,29 @@ AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
 }
-# Server fields of a protocol version: S3/S4 (2.0 only) and H1-H4, same generator as install.sh.
-protocol_fields() {
-  local i=1 h
-  [ "$1" != 2.0 ] || awg_s34_values
-  while IFS= read -r h; do echo "H$i = $h"; i=$((i+1)); done < <(awg_h_values "$1")
+# Server fields of a protocol version, same generators as install.sh. 3.1 (target or current)
+# also emits S1/S2: target 3.1 makes all four S equal (fresh awg_s31_value), downgrading from
+# 3.1 keeps the current equal S1/S2. The 3.1 HeaderProtectionKey is a secret generated here.
+protocol_fields() {  # protocol_fields <target> [<cur>]
+  local target=$1 cur=${2:-} i=1 h s hpk
+  if [ "$target" = 3.1 ]; then
+    s=$(awg_s31_value)
+    printf 'S1 = %s\nS2 = %s\nS3 = %s\nS4 = %s\n' "$s" "$s" "$s" "$s"
+  else
+    if [ "$cur" = 3.1 ]; then
+      s=$(iface_val S1)
+      printf 'S1 = %s\nS2 = %s\n' "$s" "$s"
+    fi
+    [ "$target" != 2.0 ] || awg_s34_values
+  fi
+  if [ "$target" = 3.1 ]; then
+    hpk=$(awg genkey)
+    [ -n "$hpk" ] || return 1
+    echo "HeaderProtectionKey = $hpk"
+    echo "RandomTrailers = on"
+    echo "ContentPaddingAddition = 10-100"
+  fi
+  while IFS= read -r h; do echo "H$i = $h"; i=$((i+1)); done < <(awg_h_values "$target")
 }
 peer_ip() {  # tunnel address of the peer commented "# <name>"
   awk -v n="# $1" '/^\[Peer\]/{p=1;m=0;next} p&&$0==n{m=1} p&&m&&/^AllowedIPs/{sub(/\/32.*/,"",$3);print $3;exit}' "$CONF"
@@ -309,7 +343,7 @@ list_verbose() {
 }
 list_names() { awk '/^\[Peer\]/{p=1;n="";next} p&&/^# /{n=substr($0,3)} p&&/^AllowedIPs/{print n; p=0}' "$CONF"; }
 make_protocol_file() {  # make_protocol_file <version> <source> <dest>: keep every other key
-  local ver=$1 src=$2 dst=$3 seen=0 line
+  local ver=$1 src=$2 dst=$3 seen=0 line key
   : > "$dst"
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
@@ -321,6 +355,13 @@ make_protocol_file() {  # make_protocol_file <version> <source> <dest>: keep eve
   [ "$seen" = 1 ] || printf 'protocol=%s\n' "$ver" >> "$dst"
   if [ "$ver" = 1.5 ] && ! grep -q '^I1=' "$dst"; then
     echo "I1=$AWG_I1_DEFAULT" >> "$dst"
+  fi
+  if [ "$ver" = 3.1 ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      key=${line%%=*}
+      [ -n "$(kv "$dst" "$key")" ] || printf '%s\n' "$line" >> "$dst"
+    done < <(awg_31_client_defaults)
   fi
 }
 
@@ -420,13 +461,21 @@ case "$cmd" in
   protocol)
     cur=$(kv "$DIR/protocol" protocol); cur=${cur:-1.0}
     [ -n "$name" ] || { echo "$cur"; exit 0; }
-    case "$name" in 1.0|1.5|2.0) ;; *) echo "protocol must be 1.0, 1.5 or 2.0" >&2; exit 1 ;; esac
+    case "$name" in 1.0|1.5|2.0|3.1) ;; *) echo "protocol must be 1.0, 1.5, 2.0 or 3.1" >&2; exit 1 ;; esac
     take_lock
     require_conf
     ensure_dirs
     pending_txn
     cur=$(kv "$DIR/protocol" protocol); cur=${cur:-1.0}   # re-read under the lock
     [ "$name" != "$cur" ] || { echo "protocol is already $cur"; exit 0; }
+    if [ "$name" = 3.1 ]; then
+      # 3.1 needs the reviewed engine; refuse before touching any file (see update.sh).
+      engine_is_31 || die "installed amneziawg-go is not the reviewed 3.1 build; run update.sh first"
+      m=$(cat "$DIR/client-mtu" 2>/dev/null || true)
+      if [ -n "$m" ] && [ "$m" -gt 1320 ] 2>/dev/null; then
+        echo "warning: client MTU $m plus padding may fragment; consider awg-client mtu 1280" >&2
+      fi
+    fi
 
     pt=$(mktemp -d "$TXN_ROOT/protocol.XXXXXX"); chmod 700 "$pt"
     PTXN=$pt
@@ -451,9 +500,20 @@ case "$cmd" in
     esac
 
     backup="$CONF.bak-protocol-$cur.$stamp"
-    protocol_fields "$name" > "$pt/fields"
-    # the new fields replace S3/S4/H1-H4 in the [Interface] section, right after S2
-    awk -v f="$pt/fields" '/^\[Peer\]/{p=1} !p&&/^(S3|S4|H[1-4]) =/{next} {print} !p&&/^S2 =/{while((getline l<f)>0)print l}' "$CONF" > "$pt/new.conf"
+    if [ "$name" = 3.1 ] || [ "$cur" = 3.1 ]; then
+      strip='^(S[1-4]|H[1-4]|HeaderProtectionKey|RandomTrailers|ContentPaddingAddition) ='
+      anchor='^Jmax ='
+    else
+      strip='^(S3|S4|H[1-4]) ='
+      anchor='^S2 ='
+    fi
+    protocol_fields "$name" "$cur" > "$pt/fields" || { rm -rf "$pt"; PTXN=; die "awg genkey failed; cannot generate the HeaderProtectionKey for protocol 3.1"; }
+    # the new fields replace the obfuscation fields in [Interface]: after Jmax for 3.1 (which
+    # also rewrites S1/S2 and the 3.x keys), after S2 otherwise (unchanged from before)
+    awk -v f="$pt/fields" -v strip="$strip" -v anchor="$anchor" \
+      '/^\[Peer\]/{p=1} !p && $0 ~ strip {next} {print} !p && $0 ~ anchor {n++; while ((getline l < f) > 0) print l} \
+       END { exit (n == 1 ? 0 : 1) }' \
+      "$CONF" > "$pt/new.conf" || { rm -rf "$pt"; PTXN=; die "cannot rewrite $CONF: expected exactly one \"$anchor\" line (hand-edited config?)"; }
     make_protocol_file "$name" "$pt/old.protocol" "$pt/protocol"
     if ! mv -f "$pt/new.conf" "$CONF"; then rm -rf "$pt"; PTXN=; die "cannot write $CONF"; fi
     if ! mv -f "$pt/protocol" "$DIR/protocol"; then
@@ -486,6 +546,10 @@ case "$cmd" in
       rm -rf "$pt"; PTXN=
       echo "protocol $cur -> $name (backup: $backup)"
       echo "tunnel is not running as a service: restart it to apply"
+    fi
+    if [ "$name" = 3.1 ]; then
+      echo "client MTU default on 3.1 is 1280 (awg-client mtu overrides)"
+      echo "every client needs AWG 3.1 support (Amnezia VPN >= 5.0.1.5); container bridges like AmneziaWG-to-Proxy do not (see README)"
     fi
     echo "New configs: awg-client show <name> for:"
     list_names | sed 's/^/  /'

@@ -21,7 +21,7 @@ Run as root on a fresh server. See README.md.
   --bin-dir DIR         use prebuilt amneziawg-go, awg, awg-quick from DIR (skip build)
   --build-only DIR      only build the three binaries into DIR and exit
   --first-client NAME   create a client right after install       default: none
-  --protocol 1.0|1.5|2.0  AmneziaWG protocol version                  default: 1.0 (menu 1/2/3 in a terminal)
+  --protocol 1.0|1.5|2.0|3.1  AmneziaWG protocol version              default: 1.0 (menu 1/2/3/4 in a terminal)
   --no-service          write files only: no systemd, sysctl, firewall (for testing)
   --block-ping          also drop incoming ping on the uplink (runs block-ping on; see README)
   --allow-outdated      do not stop if this git checkout is behind upstream
@@ -94,7 +94,7 @@ done
 PORT=$((10#$PORT))
 { [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ]; } || die "--port must be 1-65535"
 valid_subnet "$SUBNET" || die "--subnet must look like 10.79.0 (each part 0-255, no leading zeros)"
-[ -z "$PROTOCOL" ] || case "$PROTOCOL" in 1.0|1.5|2.0) ;; *) die "--protocol must be 1.0, 1.5 or 2.0" ;; esac
+[ -z "$PROTOCOL" ] || case "$PROTOCOL" in 1.0|1.5|2.0|3.1) ;; *) die "--protocol must be 1.0, 1.5, 2.0 or 3.1" ;; esac
 
 # Started through `curl ... | bash` or with a lone script file: no kit checkout next to this
 # script, so fetch the kit into /opt/awg-vps-kit (or fast-forward the clone there) and continue
@@ -140,13 +140,14 @@ if [ -z "$PROTOCOL" ] && [ -z "$BUILD_ONLY" ] && ( : < /dev/tty ) 2>/dev/null; t
     echo "  1 - version 1.0  classic: Jc/Jmin/Jmax, S1/S2, H1-H4 (works with every client)"
     echo "  2 - version 1.5  adds I1 signature packet (QUIC-like), client side; needs a client with 1.5 support"
     echo "  3 - version 2.0  adds S3/S4 and H1-H4 as ranges; needs a client with 2.0 support"
-    printf 'Choose 1-3 [1]: '
+    echo "  4 - version 3.1  header protection, equal S, RandomTrailers; needs a client with 3.1 support (Amnezia VPN >= 5.0.1.5)"
+    printf 'Choose 1-4 [1]: '
   } > /dev/tty
   read -r PROTOCOL < /dev/tty || PROTOCOL=
-  case "$PROTOCOL" in 1) PROTOCOL=1.0 ;; 2) PROTOCOL=1.5 ;; 3) PROTOCOL=2.0 ;; esac
+  case "$PROTOCOL" in 1) PROTOCOL=1.0 ;; 2) PROTOCOL=1.5 ;; 3) PROTOCOL=2.0 ;; 4) PROTOCOL=3.1 ;; esac
 fi
 PROTOCOL=${PROTOCOL:-1.0}
-case "$PROTOCOL" in 1.0|1.5|2.0) ;; *) die "--protocol must be 1.0, 1.5 or 2.0" ;; esac
+case "$PROTOCOL" in 1.0|1.5|2.0|3.1) ;; *) die "--protocol must be 1.0, 1.5, 2.0 or 3.1" ;; esac
 command -v apt-get >/dev/null || die "only Debian/Ubuntu (apt) is supported"
 export DEBIAN_FRONTEND=noninteractive
 
@@ -269,6 +270,11 @@ if [ -z "$BIN_DIR" ]; then
   build_binaries "$BIN_DIR"
 fi
 for f in amneziawg-go awg awg-quick; do [ -x "$BIN_DIR/$f" ] || die "missing $BIN_DIR/$f"; done
+# 3.1 relies on the reviewed engine: with --bin-dir the binary is unverified, so warn (never
+# refuse) when its versions file is missing or pins a different amneziawg-go than upstream.lock.
+if [ "$PROTOCOL" = 3.1 ] && { [ ! -f "$BIN_DIR/versions" ] || [ "$(kv "$BIN_DIR/versions" amneziawg-go)" != "$(pinned_commit amneziawg-go)" ]; }; then
+  echo "warning: $BIN_DIR amneziawg-go is not the reviewed 3.1 build (no versions file, or a different amneziawg-go than upstream.lock); protocol 3.1 may not work" >&2
+fi
 log "Installing binaries to /usr/local/bin"
 apt-get install -y -qq iproute2 nftables qrencode curl >/dev/null
 install -m 755 "$BIN_DIR/amneziawg-go" "$BIN_DIR/awg" "$BIN_DIR/awg-quick" /usr/local/bin/
@@ -294,8 +300,12 @@ fi
 # H1-H4: four distinct values, or (2.0) four non-overlapping ranges; same generator as awg-client
 mapfile -t H < <(awg_h_values "$PROTOCOL")
 [ ${#H[@]} -eq 4 ] || die "could not generate the H1-H4 values"
-S1=$(shuf -i 15-150 -n 1); S2=$(shuf -i 15-150 -n 1)
-while [ $((S1 + 56)) -eq "$S2" ]; do S2=$(shuf -i 15-150 -n 1); done
+if [ "$PROTOCOL" = 3.1 ]; then
+  S1=$(awg_s31_value); S2=$S1   # 3.1: all four S are one equal value (15-32); S1+56 != S2 holds
+else
+  S1=$(shuf -i 15-150 -n 1); S2=$(shuf -i 15-150 -n 1)
+  while [ $((S1 + 56)) -eq "$S2" ]; do S2=$(shuf -i 15-150 -n 1); done
+fi
 
 # From here on the run creates installed state. If it fails before the tunnel is up, undo
 # what blocks a re-run (the service, NAT, ufw rules) and move the files aside, so the next
@@ -340,6 +350,8 @@ echo "$ENDPOINT" > "$DIR/endpoint"; chmod 644 "$DIR/endpoint"
   echo "protocol=$PROTOCOL"
   # 1.5: QUIC-like Initial header, random connection id, then random payload (client side only)
   [ "$PROTOCOL" != 1.5 ] || echo "I1=$AWG_I1_DEFAULT"
+  # 3.1: client-side sender fields and timer ranges (see awg-client extra_fields)
+  [ "$PROTOCOL" != 3.1 ] || awg_31_client_defaults
 } > "$DIR/protocol"; chmod 644 "$DIR/protocol"
 
 # -------------------------------------------------------------- firewall
@@ -365,6 +377,13 @@ table ip awg_nat {
 EOF
 chmod 644 "$DIR/nat-up.nft"
 
+# 3.1 header-protection key: a secret, written only into awg0.conf (mode 600) below.
+HPK=
+if [ "$PROTOCOL" = 3.1 ]; then
+  HPK=$(awg genkey)
+  [ -n "$HPK" ] || die "awg genkey failed; cannot generate the HeaderProtectionKey"
+fi
+
 cat > "$DIR/$IF.conf" <<EOF
 [Interface]
 PrivateKey = $(cat "$DIR/srv.key")
@@ -385,7 +404,9 @@ PostDown = nft delete table ip awg_nat 2>/dev/null || true
 EOF
 chmod 600 "$DIR/$IF.conf"
 [ "$PROTOCOL" != 2.0 ] || awg_s34_values >> "$DIR/$IF.conf"
+[ "$PROTOCOL" != 3.1 ] || printf 'S3 = %s\nS4 = %s\nHeaderProtectionKey = %s\nRandomTrailers = on\nContentPaddingAddition = 10-100\n' "$S1" "$S1" "$HPK" >> "$DIR/$IF.conf"
 install -m 644 "$HERE/README.md" "$DIR/README.md"
+install -m 644 "$HERE/upstream.lock" "$DIR/upstream.lock"
 
 # firewalld is not supported (see README): say so instead of leaving a tunnel that looks
 # installed but is blocked by its default zone.
