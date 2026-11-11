@@ -1,9 +1,25 @@
 # AWG VPS Kit
+
+**English** · [Русский](README.ru.md)
+
 [![CI](https://github.com/thejohnd0e/awg-vps-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/thejohnd0e/awg-vps-kit/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Last commit](https://img.shields.io/github/last-commit/thejohnd0e/awg-vps-kit)](https://github.com/thejohnd0e/awg-vps-kit/commits/master) ![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white) ![Platform](https://img.shields.io/badge/platform-Debian%20%7C%20Ubuntu-A81D33?logo=debian&logoColor=white) ![Protocol](https://img.shields.io/badge/protocol-AmneziaWG%20(UDP)-blue)
 
 AmneziaWG (userspace `amneziawg-go`) on UDP 443 and the `awg-client` command to manage
 clients. UDP-based, so it works where the ISP throttles TCP from foreign VPS hosters
 (see "When to use it").
+
+## Part of the VPS kit family
+
+`quality-vps-kit` is one of several independent tools for the same workflow: evaluate a VPS first, then set up VPN/proxy services on it.
+
+| Project | Purpose |
+|---|---|
+| [quality-vps-kit](https://github.com/thejohnd0e/quality-vps-kit) | read-only evaluation of a fresh VPS |
+| [xray-vps-kit](https://github.com/thejohnd0e/xray-vps-kit) | VLESS/Reality server installer and client management |
+| **awg-vps-kit** (this repo) | AmneziaWG server installer and client management |
+| [hysteria-vps-kit](https://github.com/thejohnd0e/hysteria-vps-kit) | Hysteria2 server installer and client management |
+
+The kits are independent: none of them modifies or requires the others.
 
 ## Related Projects
 
