@@ -29,8 +29,8 @@ Usage:
   awg-client rename <old> <new>       give a client another name (devices are not affected)
   awg-client export [file.tar.gz]     all client configs in one archive (contains private keys)
   awg-client version         show installed kit and amneziawg versions
-  awg-client protocol [1.0|1.5|2.0]   show or change the protocol version of this server
-  awg-client mtu [1280-1500]          show or set the MTU written into client configs (default 1420)
+  awg-client protocol [1.0|1.5|2.0|3.1]   show or change the protocol version of this server
+  awg-client mtu [1280-1500]          show or set the MTU written into client configs (default 1420; 1280 on 3.1)
   awg-client dns [ADDR[,ADDR]|default]  show or set the DNS servers written into client configs (default 1.1.1.1)
   awg-client help            this help
 
@@ -48,6 +48,8 @@ Notes:
     must then get its new config (`awg-client show <name>`), old configs stop working.
   - Switching only between 1.0 and 1.5 keeps the server fields: no restart, existing clients keep
     working; new configs get the I1-I5 fields for 1.5.
+  - `protocol 3.1` (header protection, RandomTrailers) needs a client with Amnezia VPN >= 5.0.1.5;
+    such client configs default to MTU 1280, an explicit `awg-client mtu` overrides it.
   - `mtu N` only changes the MTU line of client configs (server awg0 is not touched, no restart).
     Devices that are already set up keep their old MTU until they import `awg-client show <name>` again.
   - `dns` works the same way: up to 3 IPv4 addresses (the tunnel is IPv4-only), new and re-shown
@@ -93,8 +95,11 @@ require_conf() { [ -f "$CONF" ] || { echo "no $CONF" >&2; exit 1; }; }
 ensure_dirs() { mkdir -p "$CL" "$TXN_ROOT"; chmod 700 "$TXN_ROOT"; }
 
 valid() { [[ "$1" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || { echo "name: letters, digits, _ and - only (max 32); see: awg-client help" >&2; exit 1; }; }
-client_mtu() {  # MTU for client configs: $DIR/client-mtu, default 1420 (1500 minus 80 bytes of tunnel overhead)
-  local m; m=$(cat "$DIR/client-mtu" 2>/dev/null || true); echo "${m:-1420}"
+client_mtu() {  # MTU for client configs: $DIR/client-mtu, else 1280 on protocol 3.1, else 1420
+  local m; m=$(cat "$DIR/client-mtu" 2>/dev/null || true)
+  if [ -n "$m" ]; then echo "$m"; return 0; fi
+  if [ "$(kv "$DIR/protocol" protocol)" = 3.1 ]; then echo 1280; return 0; fi
+  echo 1420
 }
 client_dns() {  # DNS servers for client configs: $DIR/client-dns, default 1.1.1.1
   local d; d=$(cat "$DIR/client-dns" 2>/dev/null || true); echo "${d:-1.1.1.1}"
@@ -121,11 +126,15 @@ qr() { if command -v qrencode >/dev/null; then echo; qrencode -t ansiutf8 < "$1"
 # config between separator lines (only on screen, not in the file), then the QR code
 SEP=############################################################
 print_conf() { echo "$SEP"; cat "$CL/$1.conf"; echo "$SEP"; qr "$CL/$1.conf"; }
-extra_fields() {  # protocol-specific lines (S3/S4 from the server config, I1 from the protocol file)
+extra_fields() {  # protocol-specific lines: S3/S4, HeaderProtectionKey, RandomTrailers from the
+  # server config; the 1.5/3.1 client fields (I1-I5, padding, timers) from the protocol file.
   local k v
   for k in S3 S4; do v=$(iface_val "$k"); [ -z "$v" ] || echo "$k = $v"; done
-  [ "$(kv "$DIR/protocol" protocol)" = 1.5 ] || return 0
-  for k in I1 I2 I3 I4 I5; do v=$(kv "$DIR/protocol" "$k"); [ -z "$v" ] || echo "$k = $v"; done
+  for k in HeaderProtectionKey RandomTrailers; do v=$(iface_val "$k"); [ -z "$v" ] || echo "$k = $v"; done
+  case "$(kv "$DIR/protocol" protocol)" in
+    1.5) for k in I1 I2 I3 I4 I5; do v=$(kv "$DIR/protocol" "$k"); [ -z "$v" ] || echo "$k = $v"; done ;;
+    3.1) for k in DisableCookies ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts I1 I2 I3 I4 I5; do v=$(kv "$DIR/protocol" "$k"); [ -z "$v" ] || echo "$k = $v"; done ;;
+  esac
 }
 gen_conf() { gen_conf_raw "$@" | sed '/^H4 = /{n;/^$/d}'; }
 gen_conf_raw() {  # name ip key psk
