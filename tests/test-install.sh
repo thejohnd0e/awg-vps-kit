@@ -296,17 +296,23 @@ stub_awg
 awg-client add erin >/dev/null
 [ "$(awg-client protocol)" = 1.0 ] || fail "protocol: fresh server must report 1.0"
 key=$(cat "$DIR/clients/erin.key"); s1=$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")
-for proto in 2.0 1.5 1.0; do
+for proto in 1.5 2.0 3.1 1.0; do
   awg-client protocol "$proto" >/dev/null
   [ "$(awg-client protocol)" = "$proto" ] || fail "protocol: $proto not recorded"
   [ "$(grep -c '^\[Peer\]' "$DIR/awg0.conf")" = 1 ] || fail "protocol $proto: peer lost"
-  [ "$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")" = "$s1" ] || fail "protocol $proto: S1 changed"
-  [ "$(awk '/^\[Peer\]/{exit} /^(S3|S4|H[1-4]) =/' "$DIR/awg0.conf" | wc -l)" = "$([ "$proto" = 2.0 ] && echo 6 || echo 4)" ] || fail "protocol $proto: wrong server fields"
+  if [ "$proto" = 3.1 ]; then
+    [ "$(grep -cE '^(S[1-4]|H[1-4]|HeaderProtectionKey|RandomTrailers|ContentPaddingAddition) = ' "$DIR/awg0.conf")" = 11 ] || fail "protocol 3.1: wrong server fields"
+    s1=$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")   # 3.1 makes S1-S4 equal; a later downgrade must keep them
+  else
+    [ "$(awk '$1=="S1"{print $3}' "$DIR/awg0.conf")" = "$s1" ] || fail "protocol $proto: S1 changed"
+    [ "$(awk '/^\[Peer\]/{exit} /^(S3|S4|H[1-4]) =/' "$DIR/awg0.conf" | wc -l)" = "$([ "$proto" = 2.0 ] && echo 6 || echo 4)" ] || fail "protocol $proto: wrong server fields"
+  fi
   out=$(awg-client show erin)
   grep -q "^PrivateKey = $key\$" <<<"$out" || fail "protocol $proto: client key changed"
   case "$proto" in
     2.0) grep -Eq '^H1 = [0-9]+-[0-9]+$' <<<"$out" || fail "2.0: client H1 not a range"; grep -q '^S3 = ' <<<"$out" || fail "2.0: client has no S3" ;;
     1.5) grep -q '^I1 = ' <<<"$out" || fail "1.5: client has no I1" ;;
+    3.1) grep -q '^HeaderProtectionKey = ' <<<"$out" || fail "3.1: client has no HPK" ;;
     1.0) grep -Eq '^(S3|S4|I1) ' <<<"$out" && fail "1.0 client has newer fields" ;;
   esac
 done
@@ -317,8 +323,9 @@ awg-client protocol 1.0 >/dev/null
 [ ! -e "$DIR/awg0.conf.bak-protocol-1.0.20200101-000000" ] || fail "the oldest protocol backup must be pruned"
 find "$DIR" -maxdepth 1 -name 'awg0.conf.bak-protocol-*' ! -name '*.2020*' | grep -q . || fail "the newest protocol backup was pruned"
 [ "$(find "$DIR" -maxdepth 1 -name 'protocol.bak-*' | wc -l)" -le 5 ] || fail "protocol file backups are not pruned to 5"
-if awg-client protocol 3.0 >/dev/null 2>&1; then fail "protocol 3.0 must be rejected"; fi
-ok "awg-client protocol switches 1.0 / 1.5 / 2.0 and keeps clients"
+if out=$(awg-client protocol 3.0 2>&1); then fail "protocol 3.0 must be rejected"; fi
+grep -q '3.1' <<<"$out" || fail "protocol 3.0 rejection must mention 3.1"
+ok "awg-client protocol switches 1.0 / 1.5 / 2.0 / 3.1 and keeps clients"
 ./uninstall.sh --yes >/dev/null
 
 if out=$(./install.sh --no-service --protocol 3.0 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" 2>&1); then

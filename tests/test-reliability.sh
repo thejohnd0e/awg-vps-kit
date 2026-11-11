@@ -252,7 +252,7 @@ case_protocol() {
   local log=/tmp/awg-systemctl.log
   : > "$log"
   "$ROOT/awg-client" add erin >/dev/null
-  local before out; before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  local before out s has_kv_31 hpk o; before=$(sha256sum "$CONF" | cut -d' ' -f1)
   # key=value file format; custom I-signatures must survive every transition
   printf 'I1=<b 0xc00000000108><b 0x42>\nI2=keep=this\n' >> "$DIR/protocol"
 
@@ -287,7 +287,49 @@ case_protocol() {
   fi
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed protocol change must restore awg0.conf"
   [ "$("$ROOT/awg-client" protocol)" = 2.0 ] || fail "failed protocol change must keep protocol 2.0"
-  ok "protocol: metadata-only switches, custom fields, failed restart rollback"
+
+  # 2.0 -> 3.1 rewrites S1-S4 to one equal value and adds the 3.x keys and client defaults.
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 3.1 >/dev/null
+  s=$(awk '$1=="S1"{print $3}' "$CONF")
+  [ "$(grep -cE "^S[1-4] = $s\$" "$CONF")" = 4 ] || fail "3.1 switch: equal S missing"
+  grep -qE '^HeaderProtectionKey = [A-Za-z0-9+/]{43}=$' "$CONF" || fail "3.1 switch: HPK missing"
+  has_kv_31=$(grep -cE '^(ContentPaddingAddition|DisableCookies|RekeyAfterTime)=' "$DIR/protocol")
+  [ "$has_kv_31" -ge 3 ] || fail "3.1 switch: client defaults not appended to protocol file"
+  # custom values survive the transition (and are not overwritten by the defaults)
+  printf 'ContentPaddingAddition=50-90\nRekeyTimeout=9\n' >> "$DIR/protocol"
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 2.0 >/dev/null
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 3.1 >/dev/null
+  grep -q '^ContentPaddingAddition=50-90$' "$DIR/protocol" || fail "3.1 switch must keep custom CPA"
+  # 3.1 -> 1.0 removes every 3.x key; the equal S1/S2 survive the downgrade
+  s=$(awk '$1=="S1"{print $3}' "$CONF")   # re-captured: every switch to 3.1 regenerates S
+  SYSTEMCTL_ACTIVE=1 SYSTEMCTL_LOG=$log "$ROOT/awg-client" protocol 1.0 >/dev/null
+  grep -qE '^(S3|S4|HeaderProtectionKey|RandomTrailers|ContentPaddingAddition) = ' "$CONF" && fail "downgrade must remove all 3.x keys"
+  [ "$(awk '$1=="S1"{print $3}' "$CONF")" = "$s" ] || fail "downgrade must keep the equal S1/S2"
+  # an unreviewed engine must be refused before awg0.conf is touched
+  before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  printf 'amneziawg-go=%040d\namneziawg-tools=%040d\n' 1 2 > "$DIR/versions"
+  if SYSTEMCTL_ACTIVE=1 "$ROOT/awg-client" protocol 3.1 >/dev/null 2>&1; then fail "3.1 must be refused on an unreviewed engine"; fi
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "refused 3.1 must not touch awg0.conf"
+  # an explicit client MTU > 1320 must warn but still apply
+  printf '1400\n' > "$DIR/client-mtu"
+  printf 'amneziawg-go=%s\namneziawg-tools=%s\n' "$(grep '^amneziawg-go=' "$ROOT/upstream.lock" | cut -d= -f2)" x > "$DIR/versions"
+  out=$(SYSTEMCTL_ACTIVE=1 "$ROOT/awg-client" protocol 3.1 2>&1)
+  grep -qi 'mtu' <<<"$out" || fail "explicit large client-mtu must warn on 3.1"
+  grep -q '^HeaderProtectionKey = ' "$CONF" || fail "3.1 after warning must still apply"
+  # HPK must not leak into list/version/protocol output
+  hpk=$(awk '$1=="HeaderProtectionKey"{print $3}' "$CONF")
+  for o in "$("$ROOT/awg-client" list)" "$("$ROOT/awg-client" list -v)" "$("$ROOT/awg-client" version)" "$out"; do
+    grep -q "$hpk" <<<"$o" && fail "HPK must not appear in list/version/protocol output"
+  done
+  # a failed restart on 3.1 -> 2.0 must roll the 3.1 files back
+  before=$(sha256sum "$CONF" | cut -d' ' -f1)
+  if SYSTEMCTL_ACTIVE=1 SYSTEMCTL_RESTART_FAIL=1 SYSTEMCTL_LOG=$log \
+     "$ROOT/awg-client" protocol 2.0 >/dev/null 2>&1; then
+    fail "a failed restart must fail the 3.1 -> 2.0 change"
+  fi
+  [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "failed 3.1 -> 2.0 must restore awg0.conf"
+  [ "$("$ROOT/awg-client" protocol)" = 3.1 ] || fail "failed 3.1 -> 2.0 must keep protocol 3.1"
+  ok "protocol: metadata-only switches, custom fields, 3.1 switch/downgrade/guards, failed restart rollback"
 }
 
 case_update() {
