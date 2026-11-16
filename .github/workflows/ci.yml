@@ -24,7 +24,9 @@ jobs:
       fail-fast: false
       matrix:
         image: ["debian:12", "ubuntu:24.04"]
-    container: ${{ matrix.image }}
+    container:
+      image: ${{ matrix.image }}
+      options: --privileged   # the mss reliability case needs network namespaces and nft
     steps:
       - uses: actions/checkout@v7
       - name: Build binaries (tests the build path)
