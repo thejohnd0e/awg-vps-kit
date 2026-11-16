@@ -116,6 +116,7 @@ ok "show prints a matching client config"
 
 grep -q '^MTU = 1420$' <<<"$out" || fail "show: default client MTU must be 1420"
 grep -q '^MTU = 1280$' "$DIR/awg0.conf" || fail "server MTU must stay 1280"
+if grep -q "maxseg\|TCPMSS" "$DIR/nat-up.nft" "$DIR/awg0.conf"; then fail "no MSS clamp allowed (VPN fingerprint)"; fi
 [ "$(awg-client mtu)" = 1420 ] || fail "mtu without argument must print 1420"
 if awg-client mtu 1200 >/dev/null 2>&1; then fail "mtu below 1280 must fail"; fi
 if awg-client mtu abc >/dev/null 2>&1; then fail "non-numeric mtu must fail"; fi
@@ -262,7 +263,7 @@ for proto in 1.5 2.0 3.1; do
       has "$DIR/awg0.conf" '^RandomTrailers = on$'
       has "$DIR/awg0.conf" '^ContentPaddingAddition = 10-100$'
       has "$DIR/protocol" '^ContentPaddingAddition=10-100$'
-      has "$cfg" '^MTU = 1280$'
+      has "$cfg" '^MTU = 1420$'   # HARD RULE: never 1280 on a client (VPN fingerprint)
       srvhpk=$(awk '$1=="HeaderProtectionKey"{print $3}' "$DIR/awg0.conf")
       grep -q "^HeaderProtectionKey = $srvhpk\$" "$cfg" || fail "3.1: client HPK must equal the server one"
       has "$cfg" '^RandomTrailers = on$'
@@ -274,7 +275,7 @@ for proto in 1.5 2.0 3.1; do
   ok "protocol $proto"
   ./uninstall.sh --yes >/dev/null
 done
-# Protocol-aware client MTU: 1420 on 1.0, 1280 on 3.1; an explicit `awg-client mtu` overrides.
+# Client MTU is 1420 on every protocol (1280 is a VPN fingerprint, see DECISIONS.md); an explicit `awg-client mtu` overrides.
 ./install.sh --no-service --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
 stub_awg
 awg-client add gina >/dev/null
@@ -284,12 +285,12 @@ grep -q '^MTU = 1420$' "$DIR/clients/gina.conf" || fail "1.0 client MTU must def
 ./install.sh --no-service --protocol 3.1 --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
 stub_awg
 awg-client add hank >/dev/null
-grep -q '^MTU = 1280$' "$DIR/clients/hank.conf" || fail "3.1 client MTU must default to 1280"
-[ "$(awg-client mtu)" = 1280 ] || fail "mtu on 3.1 must print 1280"
+grep -q '^MTU = 1420$' "$DIR/clients/hank.conf" || fail "3.1 client MTU must default to 1420"
+[ "$(awg-client mtu)" = 1420 ] || fail "mtu on 3.1 must print 1420"
 awg-client mtu 1400 >/dev/null
 [ "$(awg-client mtu)" = 1400 ] || fail "an explicit mtu must override the default"
 ./uninstall.sh --yes >/dev/null
-ok "client MTU is protocol-aware (1420 on 1.0, 1280 on 3.1) and overridable"
+ok "client MTU defaults to 1420 on 1.0 and 3.1 and is overridable"
 # Switching the protocol of an installed server: fields rewritten, keys and clients kept.
 ./install.sh --no-service --endpoint 203.0.113.10 --wan-if eth0 --bin-dir "$BIN" >/dev/null
 stub_awg
