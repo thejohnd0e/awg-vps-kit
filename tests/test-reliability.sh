@@ -316,11 +316,11 @@ case_protocol() {
   printf 'amneziawg-go=%040d\namneziawg-tools=%040d\n' 1 2 > "$DIR/versions"
   if SYSTEMCTL_ACTIVE=1 "$ROOT/awg-client" protocol 3.1 >/dev/null 2>&1; then fail "3.1 must be refused on an unreviewed engine"; fi
   [ "$(sha256sum "$CONF" | cut -d' ' -f1)" = "$before" ] || fail "refused 3.1 must not touch awg0.conf"
-  # an explicit client MTU > 1320 must warn but still apply
+  # an explicit client MTU is kept and 3.1 still applies; the default stays 1420 (1280 = VPN fingerprint)
   printf '1400\n' > "$DIR/client-mtu"
   printf 'amneziawg-go=%s\namneziawg-tools=%s\n' "$(grep '^amneziawg-go=' "$ROOT/upstream.lock" | cut -d= -f2)" x > "$DIR/versions"
   out=$(SYSTEMCTL_ACTIVE=1 "$ROOT/awg-client" protocol 3.1 2>&1)
-  grep -qi 'mtu' <<<"$out" || fail "explicit large client-mtu must warn on 3.1"
+  if grep -q 'MTU 1280' <<<"$out"; then fail "3.1 must not announce a 1280 client MTU"; fi
   grep -q '^HeaderProtectionKey = ' "$CONF" || fail "3.1 after warning must still apply"
   # HPK must not leak into list/version/protocol output
   hpk=$(awk '$1=="HeaderProtectionKey"{print $3}' "$CONF")
@@ -409,7 +409,7 @@ case_update() {
   grep -qx 'delete table ip awg_nat' "$DIR/nat-up.nft" || fail "update must make nat-up.nft idempotent"
   grep -q '^PostDown = .*|| true$' "$CONF" || fail "update must fix PostDown for an old installation"
 
-  # A server installed before MSS clamping gets the rules once, ahead of the first accept.
+  # HARD RULE: a server with the old MSS clamp (kit 1.3.x-1.4.0) gets the rules removed, nothing else.
   cat > "$DIR/nat-up.nft" <<'EOS'
 table ip awg_nat
 delete table ip awg_nat
@@ -420,47 +420,26 @@ table ip awg_nat {
   }
   chain awg_forward {
     type filter hook forward priority filter - 1; policy accept;
+    # MSS clamping for the 1280 MTU of awg0 (1280 - 40 bytes of IPv4+TCP headers): clients use
+    # a larger MTU (1420), so without this they advertise an MSS that does not fit the tunnel.
+    iifname "awg0" tcp flags syn tcp option maxseg size > 1240 tcp option maxseg size set 1240
+    oifname "awg0" tcp flags syn tcp option maxseg size > 1240 tcp option maxseg size set 1240
     iifname "awg0" accept
     oifname "awg0" ct state established,related accept
   }
 }
 EOS
   "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
-  [ "$(grep -c 'tcp option maxseg size > 1240 tcp option maxseg size set 1240' "$DIR/nat-up.nft")" = 2 ]     || fail "update must add one MSS clamp rule per direction"
-  [ "$(grep -n 'maxseg' "$DIR/nat-up.nft" | tail -1 | cut -d: -f1)" -lt "$(grep -n '^    iifname "awg0" accept$' "$DIR/nat-up.nft" | cut -d: -f1)" ]     || fail "MSS rules must come before the accept rules"
-  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
-  [ "$(grep -c 'maxseg size set' "$DIR/nat-up.nft")" = 2 ] || fail "a second update must not add the MSS rules again"
+  if grep -q 'maxseg' "$DIR/nat-up.nft"; then fail "update must remove the MSS clamp rules"; fi
+  grep -q 'masquerade' "$DIR/nat-up.nft" || fail "the masquerade rule must stay"
+  [ "$(grep -c '^    iifname "awg0" accept$' "$DIR/nat-up.nft")" = 1 ] || fail "the accept rules must stay"
   ls "$DIR"/nat-up.nft.bak-update-* >/dev/null 2>&1 || fail "update must keep a backup of the old nat-up.nft"
-  rm -f "$DIR"/nat-up.nft.bak-update-*
-
-  # The oldest nat-up.nft (only the `post` chain, as on servers adopted early) gets an awg_forward
-  # chain that holds nothing but the MSS rules: no accept rule, so it allows and blocks nothing.
-  cat > "$DIR/nat-up.nft" <<'EOS'
-table ip awg_nat
-delete table ip awg_nat
-table ip awg_nat {
-  chain post {
-    type nat hook postrouting priority srcnat; policy accept;
-    ip saddr 10.78.0.0/24 oifname "eth0" masquerade
-  }
-}
-EOS
+  cp -p "$DIR/nat-up.nft" /tmp/awg-nat-clean
   "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
-  [ "$(grep -c 'tcp option maxseg size > 1240 tcp option maxseg size set 1240' "$DIR/nat-up.nft")" = 2 ] \
-    || fail "update must add the MSS rules to the oldest nat-up.nft"
-  [ "$(grep -c 'chain awg_forward' "$DIR/nat-up.nft")" = 1 ] || fail "update must add exactly one awg_forward chain"
-  if grep -q '^    [io]ifname "awg0" accept' "$DIR/nat-up.nft"; then fail "the added chain must not accept anything"; fi
-  grep -q 'masquerade' "$DIR/nat-up.nft" || fail "the existing masquerade rule must stay"
-  [ "$(grep -v '^[[:space:]]*$' "$DIR/nat-up.nft" | tail -1)" = "}" ] || fail "the migrated file must still end with the table's closing brace"
-  cp -p "$DIR/nat-up.nft" /tmp/awg-nat-migrated
-  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
-  cmp -s /tmp/awg-nat-migrated "$DIR/nat-up.nft" || fail "a second update must not change the migrated nat-up.nft"
-  rm -f /tmp/awg-nat-migrated "$DIR"/nat-up.nft.bak-update-*
-  # a file of an unknown shape is left alone (nothing is guessed on a production server)
-  printf 'table ip awg_nat {\n  chain post {\n  }\n}\n# local note\n' > "$DIR/nat-up.nft"
-  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
-  if grep -q 'maxseg' "$DIR/nat-up.nft"; then fail "an unknown nat-up.nft shape must not be modified with MSS rules"; fi
-  rm -f "$DIR"/nat-up.nft.bak-update-*
+  cmp -s /tmp/awg-nat-clean "$DIR/nat-up.nft" || fail "a second update must not change the cleaned nat-up.nft"
+  rm -f /tmp/awg-nat-clean "$DIR"/nat-up.nft.bak-update-*
+  # a fresh install must not contain any clamp
+  if grep -q 'maxseg' "$ROOT/install.sh"; then fail "install.sh must not write MSS clamp rules"; fi
 
   # The tunnel unit follows the kit, but only where install.sh created one.
   local unit=/etc/systemd/system/awg-quick@.service
@@ -736,44 +715,13 @@ case_mss() {
     echo "${sm:-none} ${cm:-none}"
   }
 
-  # without the rules the client advertises an MSS for its own 1420 MTU
-  grep -q 'maxseg' "$DIR/nat-up.nft" || fail "nat-up.nft has no MSS clamp rules"
-  grep -v maxseg "$DIR/nat-up.nft" > /tmp/awg-nat-noclamp.nft
-  ip netns exec awgr nft -f /tmp/awg-nat-noclamp.nft || fail "cannot load the NAT file without clamping"
-  local base; base=$(mss_probe 9101)
-  [ "${base%% *}" = 1380 ] || fail "baseline: server side should see the client's MSS 1380 (got: $base)"
-
+  # HARD RULE: the NAT file the kit writes has no clamp, so the site sees the client's own MSS
+  # (1380 for MTU 1420), never 1240 ("MTU 1280" VPN fingerprint)
+  if grep -q 'maxseg' "$DIR/nat-up.nft"; then fail "nat-up.nft must have no MSS clamp rules"; fi
   ip netns exec awgr nft -f "$DIR/nat-up.nft" || fail "cannot load $DIR/nat-up.nft"
-  local clamped; clamped=$(mss_probe 9102)
-  [ "${clamped%% *}" = 1240 ] || fail "clamped: server side should see MSS 1240 (got: $clamped)"
-  [ "${clamped##* }" = 1240 ] || fail "clamped: client side should see MSS 1240 (got: $clamped)"
-  # a SYN that is already small must be left alone
-  ip -n awgc route change default via 10.79.0.1 advmss 1000
-  local small; small=$(mss_probe 9103)
-  [ "${small%% *}" = 1000 ] || fail "a small MSS must not be raised (got: $small)"
-  # reloading must stay idempotent: one rule per direction, not two
-  ip netns exec awgr nft -f "$DIR/nat-up.nft"
-  [ "$(ip netns exec awgr nft list table ip awg_nat | grep -c 'maxseg')" = 2 ] || fail "reload duplicated the clamp rules"
-
-  # the migrated oldest shape (only the `post` chain) clamps just as well, and still masquerades
-  stub_git_version
-  cat > "$DIR/nat-up.nft" <<'EOS'
-table ip awg_nat
-delete table ip awg_nat
-table ip awg_nat {
-  chain post {
-    type nat hook postrouting priority srcnat; policy accept;
-    ip saddr 10.79.0.0/24 oifname "eth0" masquerade
-  }
-}
-EOS
-  "$ROOT/update.sh" --force --bin-dir "$BIN" --no-restart >/dev/null
-  ip netns exec awgr nft -f "$DIR/nat-up.nft" || fail "the migrated oldest nat-up.nft does not load"
-  ip -n awgc route change default via 10.79.0.1   # forget the advmss 1000 of the previous step
-  local migrated; migrated=$(mss_probe 9104)
-  [ "${migrated%% *}" = 1240 ] || fail "migrated oldest shape: server side should see MSS 1240 (got: $migrated)"
-  [ "${migrated##* }" = 1240 ] || fail "migrated oldest shape: client side should see MSS 1240 (got: $migrated)"
-  ok "mss: baseline 1380, clamped 1240 both ways, small MSS untouched, reload idempotent, oldest shape migrated"
+  local base; base=$(mss_probe 9101)
+  [ "${base%% *}" = 1380 ] || fail "server side must see the client's MSS 1380 (got: $base)"
+  ok "mss: no clamp, the site sees MSS 1380 (client MTU 1420)"
 }
 
 case_pins() {

@@ -121,7 +121,7 @@ never changes it.
 
 Protocol 3.1 needs a reviewed engine: the installer warns, and `awg-client protocol 3.1` refuses, when
 the installed `amneziawg-go` is not the reviewed 3.1 build (run `update.sh`). Its client configs default
-to MTU 1280 (1420 on 1.0-2.0), and the minimum client versions are Amnezia VPN >= 5.0.1.5, AmneziaWG
+to MTU 1420 like 1.0-2.0, and the minimum client versions are Amnezia VPN >= 5.0.1.5, AmneziaWG
 Android >= v3.1.20260814 and Windows >= 3.1.0. Servers whose configs feed
 [AmneziaWG-to-Proxy](https://github.com/thejohnd0e/AmneziaWG-to-Proxy) must stay on 2.0 or lower until
 the engine in that container image is updated: it is 2.0 or older and does not know the 3.1 fields.
@@ -174,7 +174,7 @@ awg-client rename <old> <new>   # new name for a client; the device keeps workin
 awg-client export [file.tar.gz] # every client config in one archive (holds private keys)
 awg-client version          # installed kit and amneziawg versions
 awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 / 3.1 (without an argument: show it)
-awg-client mtu 1420         # MTU written into client configs (without an argument: show it; default 1420, 1280 on 3.1)
+awg-client mtu 1420         # MTU written into client configs (without an argument: show it; default 1420 on every protocol)
 awg-client dns 9.9.9.9      # DNS servers written into client configs (up to 3 IPv4; `default` = 1.1.1.1)
 ```
 
@@ -200,22 +200,11 @@ awg-client dns 9.9.9.9      # DNS servers written into client configs (up to 3 I
   accepted because the tunnel is IPv4-only. As with MTU, a device keeps its old DNS until it imports
   `awg-client show <name>` again.
 - Do not remove a client that is in use: that device loses its VPN immediately.
-- Client MTU is 1420 by default (1500 minus the tunnel overhead); on protocol 3.1 the default is 1280,
-  because the header protection and padding make the packet larger. Some sites (for example 2ip.io)
-  flag a tunnel MTU of 1280 as "VPN fingerprint". The server interface stays at 1280; `awg-client mtu N`
+- Client MTU is 1420 by default on every protocol (including 3.1). Some sites (for example 2ip.io) flag a
+  tunnel MTU of 1280 as "VPN fingerprint". The server interface stays at 1280; `awg-client mtu N`
   (1280-1500) changes only the client configs and overrides the default. A device keeps its old MTU until
   it imports `awg-client show <name>` again. If the server's own uplink MTU is below 1500, use WAN MTU minus 80.
-- The server clamps the TCP MSS of connections through the tunnel to 1240 (the 1280 MTU of `awg0`
-  minus 40 bytes of headers), in both directions; smaller values are left alone. Without it a client
-  with MTU 1420 would advertise an MSS that does not fit the server interface. `update.sh` adds the
-  rules to servers installed earlier whose NAT lives in `nat-up.nft` (including the oldest shape that
-  has only the `post` chain: it gets an `awg_forward` chain that holds nothing but these rules). Servers
-  that still keep NAT as iptables commands in the `PostUp` line of `awg0.conf` (adopted before
-  `nat-up.nft` existed) are not changed: a missing clamp there only means that large TCP transfers rely
-  on path MTU discovery, as before.
-
-### Using a client config
-
+- The server does **not** clamp the TCP MSS (a clamp to 1240 shows up on leak pages as "MTU 1280", a VPN fingerprint). `update.sh` removes the clamp rules that kits 1.3.x-1.4.0 wrote into `nat-up.nft`.
 - **Phone / PC:** import the printed config (or scan the QR code) in the AmneziaWG or
   Amnezia VPN app.
 - **OpenWrt (ZeroBlock / RouteRich):** create a network interface with
@@ -234,8 +223,7 @@ changes client-side data: the server fields are identical, so `awg0.conf` is not
 not restarted and existing clients keep working; `awg-client show` then adds the `I1`-`I5` fields (or
 leaves them out for 1.0). Custom `I1`-`I5` values in `protocol` are preserved. `protocol 3.1` first checks
 that the installed `amneziawg-go` is the reviewed 3.1 build and refuses otherwise (run `update.sh`); it
-warns when the configured client MTU is above 1320 (padding may fragment), and client configs default to
-MTU 1280 afterwards unless `awg-client mtu` overrides. The version does not change
+keeps the client MTU default at 1420. The version does not change
 speed (measured: 1.0, 1.5 and 2.0 give the same throughput within the noise).
 
 The obfuscation parameters must be identical on server and client; `awg-client` copies

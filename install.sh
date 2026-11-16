@@ -366,10 +366,8 @@ table ip awg_nat {
   }
   chain awg_forward {
     type filter hook forward priority filter - 1; policy accept;
-    # MSS clamping for the 1280 MTU of $IF (1280 - 40 bytes of IPv4+TCP headers): clients use
-    # a larger MTU (1420), so without this they advertise an MSS that does not fit the tunnel.
-    iifname "$IF" tcp flags syn tcp option maxseg size > 1240 tcp option maxseg size set 1240
-    oifname "$IF" tcp flags syn tcp option maxseg size > 1240 tcp option maxseg size set 1240
+    # NO MSS clamping here, on purpose: a clamp to the 1280 MTU of the server interface makes every
+    # site see "MTU 1280" and flag the connection as a VPN (see DECISIONS.md, hard rule).
     iifname "$IF" accept
     oifname "$IF" ct state established,related accept
   }
