@@ -175,6 +175,7 @@ awg-client export [file.tar.gz] # every client config in one archive (holds priv
 awg-client version          # installed kit and amneziawg versions
 awg-client protocol 2.0     # switch the server to AmneziaWG 1.0 / 1.5 / 2.0 / 3.1 (without an argument: show it)
 awg-client mtu 1420         # MTU written into client configs (without an argument: show it; default 1420 on every protocol)
+awg-client endpoint 203.0.113.5  # server address written into client configs, after the server IP changed (without an argument: show it; IPv4, IPv6 or DNS name; no restart)
 awg-client dns 9.9.9.9      # DNS servers written into client configs (up to 3 IPv4; `default` = 1.1.1.1)
 ```
 

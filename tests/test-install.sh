@@ -126,6 +126,19 @@ grep -q '^MTU = 1360$' <<<"$out" || fail "show must use the configured client MT
 awg-client mtu 1420 >/dev/null
 ok "client MTU defaults to 1420, is configurable, server MTU unchanged"
 
+old_endpoint=$(awg-client endpoint)
+if awg-client endpoint 'not an address!' >/dev/null 2>&1; then fail "endpoint must refuse an invalid address"; fi
+if awg-client endpoint 999.1.1.1 >/dev/null 2>&1; then fail "endpoint must refuse an IPv4 with an octet over 255"; fi
+if awg-client endpoint "$old_endpoint" >/dev/null 2>&1; then fail "endpoint must refuse the unchanged address"; fi
+awg-client endpoint 203.0.113.77 >/dev/null
+[ "$(awg-client endpoint)" = 203.0.113.77 ] || fail "endpoint must print the new address"
+grep -q '^Endpoint = 203.0.113.77:' <(awg-client show alice) || fail "show must use the new endpoint"
+grep -q '^Endpoint = 203.0.113.77:' "$DIR/clients/alice.conf" || fail "the stored client file must follow the endpoint"
+awg-client endpoint 2001:db8::9 >/dev/null
+grep -q '^Endpoint = \[2001:db8::9\]:' <(awg-client show alice) || fail "an IPv6 endpoint must be bracketed"
+awg-client endpoint "$old_endpoint" >/dev/null
+ok "endpoint is validated, changes client configs and leaves the tunnel alone"
+
 if awg-client add alice >/dev/null 2>&1; then fail "duplicate add must fail"; fi
 if awg-client add 'bad name' >/dev/null 2>&1; then fail "invalid name must fail"; fi
 ok "duplicate and invalid names rejected"

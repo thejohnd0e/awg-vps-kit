@@ -32,6 +32,7 @@ Usage:
   awg-client protocol [1.0|1.5|2.0|3.1]   show or change the protocol version of this server
   awg-client mtu [1280-1500]          show or set the MTU written into client configs (default 1420; never 1280 by default: sites flag it as a VPN)
   awg-client dns [ADDR[,ADDR]|default]  show or set the DNS servers written into client configs (default 1.1.1.1)
+  awg-client endpoint [ADDR]          show or set the server address written into client configs (after the server IP changed)
   awg-client help            this help
 
 Notes:
@@ -54,6 +55,9 @@ Notes:
     Devices that are already set up keep their old MTU until they import `awg-client show <name>` again.
   - `dns` works the same way: up to 3 IPv4 addresses (the tunnel is IPv4-only), new and re-shown
     configs get them, devices keep the old ones until they import the config again.
+  - `endpoint ADDR` takes an IPv4, IPv6 or DNS name, rewrites the stored client files and prints nothing else to do
+    on the server (the tunnel is not touched, no restart); devices keep the old address until they import
+    `awg-client show <name>` again. Use it after the hoster changed the server IP.
   - `rename` changes the name in awg0.conf and the file names only; keys, address and the running
     peer stay as they are, so the device keeps working and needs no new config.
   - `export` writes every client config, in the current format, to one .tar.gz (default
@@ -64,6 +68,16 @@ Notes:
 EOF
 }
 
+valid_endpoint() {  # valid_endpoint <addr>: IPv4, IPv6 literal or DNS name (no brackets, no port)
+  local a=$1 o IFS=.
+  [ -n "$a" ] && [ "${#a}" -le 253 ] || return 1
+  if [[ $a =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    for o in $a; do [ "${#o}" -le 3 ] && [ "$((10#$o))" -le 255 ] || return 1; done
+    return 0
+  fi
+  if [[ $a == *:* ]]; then [[ $a =~ ^[0-9A-Fa-f:.]+$ && $a == *:*:* ]]; return; fi
+  [[ $a =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ]]
+}
 format_endpoint() {  # format_endpoint <host> <port>; brackets bare IPv6 literals
   case "$1" in
     \[*\]) printf '%s:%s\n' "$1" "$2" ;;
@@ -559,6 +573,27 @@ case "$cmd" in
     printf '%s\n' "$name" > "$DIR/client-mtu.new" && mv -f "$DIR/client-mtu.new" "$DIR/client-mtu"
     chmod 644 "$DIR/client-mtu"
     echo "client MTU = $name (new and re-shown configs; devices must re-import: awg-client show <name>)"
+    exit 0 ;;
+  endpoint)
+    [ -n "$name" ] || { cat "$DIR/endpoint" 2>/dev/null || echo "(not set)"; exit 0; }
+    valid_endpoint "$name" || { echo "endpoint must be an IPv4 address, an IPv6 address or a DNS name (no port, no brackets)" >&2; exit 1; }
+    take_lock
+    require_conf
+    ensure_dirs
+    if [ "$(cat "$DIR/endpoint" 2>/dev/null)" = "$name" ]; then echo "endpoint is already $name" >&2; exit 1; fi
+    cp -p "$DIR/endpoint" "$DIR/endpoint.bak-$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    printf '%s
+' "$name" > "$DIR/endpoint.new" && mv -f "$DIR/endpoint.new" "$DIR/endpoint"
+    chmod 644 "$DIR/endpoint"
+    n=0
+    while IFS= read -r c; do
+      [ -n "$c" ] && [ -f "$CL/$c.key" ] || continue
+      ip=$(peer_ip "$c"); [ -n "$ip" ] || continue
+      tmp=$CL/.$c.conf.$$
+      gen_conf "$c" "$ip" "$(cat "$CL/$c.key")" "$(cat "$CL/$c.psk")" > "$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$CL/$c.conf" && n=$((n+1))
+      rm -f "$tmp"
+    done < <(list_names)
+    echo "endpoint = $name ($n client files rewritten; the tunnel is untouched; devices must re-import: awg-client show <name>)"
     exit 0 ;;
   remove)
     valid "$name"
